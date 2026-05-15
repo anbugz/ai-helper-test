@@ -1,0 +1,122 @@
+"""
+tnved_engine.py — кэш данных ТН ВЭД, поиск, проверка радиоэлектроники.
+Импортирует parsers (parse_tnved_tariff), database (SQLite-кэш) и config.
+"""
+import re
+from typing import List, Dict, Optional, Set
+from parsers import parse_tnved_tariff
+from database import save_tnved_batch, get_tnved_from_db, get_all_tnved_from_db
+from config import RADIO_ELECTRONICS_CODES_SET, _RADIO_GROUPS, logger
+
+# ------------------------------------------------------------------
+# Кэш (в памяти, не в SQLite)
+# ------------------------------------------------------------------
+_TNVED_ROWS_CACHE: List[List[str]] = []
+_TNVED_INDEX: Dict[str, int] = {}  # code -> row_index
+
+
+def _build_tnved_index(rows: List[List[str]]) -> None:
+    """Строит индекс для быстрого поиска кодов ТН ВЭД."""
+    global _TNVED_INDEX
+    _TNVED_INDEX = {}
+    for i, row in enumerate(rows):
+        if not row or not isinstance(row[0], str):
+            continue
+        code = row[0].replace(" ", "").strip()
+        if len(code) >= 6 and code.isdigit():
+            _TNVED_INDEX[code] = i
+
+
+def load_tnved_rows(rows: List[List[str]], persist: bool = True) -> None:
+    """Загружает строки ТН ВЭД в кэш, строит индекс, сохраняет в SQLite."""
+    global _TNVED_ROWS_CACHE
+    _TNVED_ROWS_CACHE = [r for r in rows if r and any(str(c).strip() for c in r)]
+    _build_tnved_index(_TNVED_ROWS_CACHE)
+    logger.info(f"TNVED кэш: {len(_TNVED_ROWS_CACHE)} строк, {len(_TNVED_INDEX)} кодов")
+    if persist:
+        parsed_rows = [parse_tnved_tariff(row[2] if len(row) > 2 else "") for row in _TNVED_ROWS_CACHE]
+        save_tnved_batch(_TNVED_ROWS_CACHE, parsed_rows)
+
+
+def restore_tnved_from_db() -> bool:
+    """Восстанавливает кэш ТН ВЭД из SQLite при старте бота. Возвращает True если данные есть."""
+    global _TNVED_ROWS_CACHE
+    rows = get_all_tnved_from_db()
+    if not rows:
+        logger.info("TNVED кэш в БД пуст — жду загрузки .xlsx")
+        return False
+    _TNVED_ROWS_CACHE = rows
+    _build_tnved_index(_TNVED_ROWS_CACHE)
+    logger.info(f"TNVED кэш восстановлен из БД: {len(_TNVED_ROWS_CACHE)} строк")
+    return True
+
+
+def get_tnved_from_cache(code: str) -> Optional[dict]:
+    """Быстрый поиск кода ТН ВЭД: сначала память (O(1)), потом SQLite."""
+    if not code:
+        return None
+    # 1. Память — O(1)
+    if _TNVED_INDEX:
+        search_code = code.replace(" ", "").replace(".", "").strip()
+        idx = _TNVED_INDEX.get(search_code)
+        if idx is not None and idx < len(_TNVED_ROWS_CACHE):
+            return _row_to_tnved_dict(_TNVED_ROWS_CACHE[idx])
+        if len(search_code) >= 6:
+            for full_code, i in _TNVED_INDEX.items():
+                if full_code.startswith(search_code) and i < len(_TNVED_ROWS_CACHE):
+                    return _row_to_tnved_dict(_TNVED_ROWS_CACHE[i])
+    # 2. SQLite — если в памяти нет (например после редеплоя без restore)
+    return get_tnved_from_db(code)
+
+
+def _row_to_tnved_dict(row: List[str]) -> dict:
+    """Преобразует строку Excel в словарь с данными ТН ВЭД."""
+    tariff = row[2] if len(row) > 2 else ""
+    parsed = parse_tnved_tariff(tariff)
+    return {
+        "code": row[0] if row else "",
+        "name": row[1] if len(row) > 1 else "",
+        "tariff": tariff,
+        "parsed_tariff": parsed,
+        "has_euro_component": parsed["type"] in ("min", "plus", "fixed_eur"),
+        "needs_weight": parsed["type"] in ("min", "plus", "fixed_eur"),
+    }
+
+
+# ------------------------------------------------------------------
+# Радиоэлектроника
+# ------------------------------------------------------------------
+
+def is_radio_electronics(code: str) -> bool:
+    """Проверяет по списку + по первым 2 цифрам группы."""
+    if not code:
+        return False
+    c = code.replace(" ", "").replace(".", "").strip()
+    if len(c) >= 2 and c[:2] not in _RADIO_GROUPS:
+        return False
+    for pattern in RADIO_ELECTRONICS_CODES_SET:
+        if c.startswith(pattern):
+            return True
+    # Кастомные коды из SQLite проверяются отдельно через get_custom_codes()
+    return False
+
+
+# ------------------------------------------------------------------
+# Извлечение кодов из текста
+# ------------------------------------------------------------------
+
+def extract_tnved_codes(text: str) -> List[str]:
+    """Извлекает коды ТН ВЭД (8-10 цифр) из текста."""
+    return re.findall(r"\d{8,10}", text)
+
+
+# ------------------------------------------------------------------
+# Таможенный сбор по шкале
+# ------------------------------------------------------------------
+
+def calculate_customs_fee(value_rub: float) -> int:
+    from config import CUSTOMS_FEE_RUB, RADIO_FEE
+    for threshold, fee in sorted(CUSTOMS_FEE_RUB.items()):
+        if value_rub <= threshold:
+            return fee
+    return RADIO_FEE
