@@ -1,10 +1,10 @@
 """
 utils.py — хелперы: курсы ЦБ, safe_send, rate_limit, валюты, DeepSeek, построение сообщений.
-Импортирует config и database.
+Использует requests (уже на bothost) вместо httpx. openai — отложенный импорт.
 """
 import asyncio
 import re
-import httpx
+import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -80,13 +80,13 @@ CBR_URL = "https://www.cbr.ru/scripts/XML_daily.asp"
 
 
 async def get_cbr_rates() -> Dict[str, str]:
-    """Получает курсы ЦБ РФ: CNY, USD, EUR."""
+    """Получает курсы ЦБ РФ: CNY, USD, EUR. requests через to_thread (bothost нет httpx)."""
     rates = {"CNY": "н/д", "USD": "н/д", "EUR": "н/д", "DATE": ""}
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(CBR_URL)
-            r.raise_for_status()
-        root = ET.fromstring(r.text)
+        # bothost: requests есть, httpx нет → запускаем синхронный requests в треде
+        resp = await asyncio.to_thread(requests.get, CBR_URL, timeout=15)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.text)
         date_attr = root.get("Date", "")
         rates["DATE"] = date_attr
         for valute in root.findall("Valute"):
@@ -126,8 +126,11 @@ def format_cross_rates(rates: Dict[str, str]) -> str:
 # ------------------------------------------------------------------
 
 async def ask_deepseek(messages: List[Dict]) -> str:
-    """Отправляет запрос к DeepSeek API, возвращает текст ответа."""
-    import openai
+    """Отправляет запрос к DeepSeek API. Отложенный импорт openai на случай если не установлен."""
+    try:
+        import openai
+    except ImportError:
+        return "⚠️ Модуль openai не установлен. Установите: pip install openai"
     client = openai.AsyncOpenAI(
         api_key=DEEPSEEK_API_KEY,
         base_url="https://api.deepseek.com/v1",
