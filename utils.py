@@ -1,10 +1,10 @@
 """
 utils.py — хелперы: курсы ЦБ, safe_send, rate_limit, валюты, DeepSeek, построение сообщений.
-Использует requests (уже на bothost) вместо httpx. openai — отложенный импорт.
+Курсы ЦБ через urllib (встроено в Python). openai — отложенный импорт.
 """
 import asyncio
 import re
-import requests
+import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -80,13 +80,14 @@ CBR_URL = "https://www.cbr.ru/scripts/XML_daily.asp"
 
 
 async def get_cbr_rates() -> Dict[str, str]:
-    """Получает курсы ЦБ РФ: CNY, USD, EUR. requests через to_thread (bothost нет httpx)."""
+    """Получает курсы ЦБ РФ: CNY, USD, EUR. urllib (встроено в Python, не нужен pip)."""
     rates = {"CNY": "н/д", "USD": "н/д", "EUR": "н/д", "DATE": ""}
     try:
-        # bothost: requests есть, httpx нет → запускаем синхронный requests в треде
-        resp = await asyncio.to_thread(requests.get, CBR_URL, timeout=15)
-        resp.raise_for_status()
-        root = ET.fromstring(resp.text)
+        def _fetch():
+            with urllib.request.urlopen(CBR_URL, timeout=15) as resp:
+                return resp.read().decode("windows-1251")
+        xml_text = await asyncio.to_thread(_fetch)
+        root = ET.fromstring(xml_text)
         date_attr = root.get("Date", "")
         rates["DATE"] = date_attr
         for valute in root.findall("Valute"):
