@@ -1,15 +1,17 @@
 """
 bot_instance.py — aiogram Dispatcher и Bot.
 Импортирует только config (токен). Все остальные модули импортируют dp/bot отсюда.
+aiogram 3.7+: default=DefaultBotProperties() вместо parse_mode=...
 """
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from config import BOT_TOKEN, logger
 
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN не задан! Бот не запустится.")
 
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 async def send_admin_notification(text: str) -> None:
