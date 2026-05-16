@@ -269,6 +269,69 @@ async def handle_document(message: Message):
         await message.answer(f"Ошибка обработки файла: {e}")
 
 
+def _format_calc_table(answer: str, currency: str) -> str:
+    """Парсит цифры из ответа DeepSeek и формирует копируемую псевдо-таблицу."""
+    import re
+    lines = answer.split("\n")
+    
+    # Ищем строки с цифрами и валютой
+    data = {}
+    for line in lines:
+        line_stripped = line.strip().lower()
+        # ТС / Таможенная стоимость / Инвойс
+        if any(k in line_stripped for k in ("тс", "таможенная стоимость", "инвойс")):
+            m = re.search(r"([\d\s,.]+)\s*" + re.escape(currency), line, re.IGNORECASE)
+            if m and "тс" not in data:
+                data["тс"] = m.group(1).strip()
+        # Пошлина
+        elif "пошлин" in line_stripped:
+            m = re.search(r"([\d\s,.]+)\s*" + re.escape(currency), line, re.IGNORECASE)
+            if m:
+                data["пошлина"] = m.group(1).strip()
+        # НДС
+        elif "ндс" in line_stripped:
+            m = re.search(r"([\d\s,.]+)\s*" + re.escape(currency), line, re.IGNORECASE)
+            if m:
+                data["ндс"] = m.group(1).strip()
+        # Сбор
+        elif "сбор" in line_stripped and "радио" not in line_stripped:
+            m = re.search(r"([\d\s,.]+)\s*" + re.escape(currency), line, re.IGNORECASE)
+            if m:
+                data["сбор"] = m.group(1).strip()
+        # ИТОГО
+        elif "итого" in line_stripped:
+            m = re.search(r"([\d\s,.]+)\s*" + re.escape(currency), line, re.IGNORECASE)
+            if m:
+                data["итого"] = m.group(1).strip()
+    
+    # Если нашли ТС и хотя бы пошлина — строим таблицу
+    if "тс" in data and ("пошлина" in data or "ндс" in data):
+        table = f"\n\n📊 <b>Копируемая сводка</b>\n"
+        table += f"<code>"
+        table += f"┌──────────┬──────────┐\n"
+        table += f"│ Статья   │ {currency:>8} │\n"
+        table += f"├──────────┼──────────┤\n"
+        
+        rows = []
+        for key in ("тс", "пошлина", "ндс", "сбор"):
+            if key in data:
+                val = data[key]
+                label = key.upper() if key != "тс" else "ТС"
+                rows.append(f"│ {label:<8} │ {val:>8} │")
+        
+        table += "\n".join(rows)
+        
+        if "итого" in data:
+            table += f"\n├──────────┼──────────┤\n"
+            table += f"│ ИТОГО    │ {data['итого']:>8} │\n"
+        
+        table += f"└──────────┴──────────┘"
+        table += f"</code>"
+        return table
+    
+    return ""
+
+
 # ==============================================================================
 # ОСНОВНОЙ ХЭНДЛЕР ТЕКСТА
 # ==============================================================================
@@ -486,6 +549,12 @@ async def handle_text(message: Message):
                     f"\n\nℹ️ <i>Курс ЦБ РФ на {rates.get('DATE', 'сегодня')}: "
                     f"1 {base_currency} = {rate} ₽</i>"
                 )
+
+    # Пост-обработка: копируемая таблица
+    if is_calculation_request and base_currency != "RUB":
+        table = _format_calc_table(answer, base_currency)
+        if table:
+            answer += table
 
     # Пост-обработка НДС
     if not any(k in answer.lower() for k in ("ндс", "налог на добавленную", "nds")):
