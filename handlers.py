@@ -203,6 +203,9 @@ def _strip_deepseek_dup(answer: str) -> str:
             tc_start = i
         if ls.startswith("📊 Платежи:") or ls.startswith("📊 **Платежи**"):
             pay_start = i
+        # Простой текстовый блок ПЛАТЕЖИ от DeepSeek
+        if ls == "платежи:" or ls.startswith("платежи:\n") or (ls == "платежи" and i + 1 < len(lines) and lines[i+1].strip().lower().startswith("пошлин")):
+            pay_start = i
     
     # Если нашли "📊 Платежи:" от DeepSeek — вырезаем всё оттуда и до конца
     # (наша таблица заменит)
@@ -229,8 +232,9 @@ def _strip_deepseek_dup(answer: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _format_payments_box(answer: str, currency: str, rates: dict = None) -> str:
-    """Только Пошлина/НДС/Сбор/ИТОГО в рамке. Без ТС. Если rates — добавляет рублевый эквивалент."""
+def _format_payments_box(answer: str, currency: str, rates: dict = None, tariff_info: dict = None, is_radio: bool = False) -> str:
+    """Только Пошлина/НДС/Сбор/ИТОГО в рамке. Без ТС. Если rates — добавляет рублевый эквивалент.
+    Если tariff_info — добавляет ставки в подписи (Пошлина 0%, НДС 22% и т.д.)."""
     import re
     lines = answer.split("\n")
     data: dict = {}
@@ -258,24 +262,46 @@ def _format_payments_box(answer: str, currency: str, rates: dict = None) -> str:
                 break
     if "пошлина" not in data and "ндс" not in data:
         return ""
+    # Формируем labels со ставками
+    labels = {
+        "пошлина": "Пошлина",
+        "ндс": "НДС",
+        "сбор": "Сбор",
+    }
+    if tariff_info:
+        pt = tariff_info.get("parsed_tariff", {})
+        tariff_str = tariff_info.get("tariff", "")
+        name = tariff_info.get("name", "").lower()
+        # Пошлина: ставка
+        if pt.get("type") == "percent":
+            labels["пошлина"] = f"Пошлина {tariff_str}"
+        elif pt.get("type") in ("min", "plus", "fixed_eur", "fixed_usd"):
+            labels["пошлина"] = f"Пошлина {tariff_str} ({pt.get('formula', '')})"
+        # НДС: 22% или 10%
+        if any(w in name for w in ("пищев", "детск", "медиц", "книг", "печат")):
+            labels["ндс"] = "НДС 10%"
+        else:
+            labels["ндс"] = "НДС 22%"
+        # Сбор: радио или шкала
+        if is_radio:
+            labels["сбор"] = "Сбор 73 860 ₽"
     # Минималистичный <pre> блок
-    lines = []
-    w_label, w_val = 12, 16
+    out_lines = []
+    w_label, w_val = 18, 14
     sep = "─" * (w_label + w_val + 3)
     for key in ("пошлина", "ндс", "сбор"):
         if key in data:
-            lbl = {"пошлина": "Пошлина", "ндс": "НДС", "сбор": "Сбор"}[key]
+            lbl = labels.get(key, {"пошлина": "Пошлина", "ндс": "НДС", "сбор": "Сбор"}[key])
             val = data[key]
             val_spaced = " ".join(val[i:i+3] for i in range(0, len(val), 3)) if "." not in val else val
-            lines.append(f"  {lbl:<{w_label}} {val_spaced:>{w_val}} {currency}")
-    body = "\n".join(lines)
+            out_lines.append(f"  {lbl:<{w_label}} {val_spaced:>{w_val}} {currency}")
+    body = "\n".join(out_lines)
     tot = ""
     rub_line = ""
     if "итого" in data:
         it = data["итого"]
         it_spaced = " ".join(it[i:i+3] for i in range(0, len(it), 3)) if "." not in it else it
         tot = f"\n  {sep}\n  {'ИТОГО':<{w_label}} {it_spaced:>{w_val}} {currency}"
-        # Рублевый эквивалент
         if rates and currency in rates:
             try:
                 rate_val = float(rates[currency])
@@ -428,7 +454,8 @@ async def handle_text(message: Message):
 
     # === ТАБЛИЦА ПЛАТЕЖЕЙ (одна, без ТС) ===
     if is_calc and base_cur != "RUB":
-        box = _format_payments_box(answer, base_cur, rates)
+        ti = found_codes[0] if found_codes else None
+        box = _format_payments_box(answer, base_cur, rates, tariff_info=ti, is_radio=radio_detected)
         if box:
             answer += box
 
