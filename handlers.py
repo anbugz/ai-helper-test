@@ -299,6 +299,30 @@ async def handle_text(message: Message):
             else:
                 missing.append(c)
 
+    # === БЫСТРЫЙ ОТВЕТ: только код, без расчёта ===
+    if codes and found_codes and not is_calc:
+        info = found_codes[0]
+        pt = info["parsed_tariff"]
+        # Тип пошлины
+        if pt.get("type") in ("min", "plus", "fixed_eur"):
+            duty_type = f"комбинированная ({pt['formula']})"
+        elif pt.get("type") == "percent":
+            duty_type = "адвалорная"
+        else:
+            duty_type = info['tariff']
+        # НДС
+        vat = "10%" if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")) else "22%"
+        # Радио
+        radio = "\n⚡ Сбор 73 860 ₽" if any(is_radio_electronics(c) for c in codes) else ""
+        await message.answer(
+            f"📋 <code>{info['code']}</code>\n"
+            f"🔧 {info['name'][:70]}\n"
+            f"💰 Пошлина: {info['tariff']} — {duty_type}\n"
+            f"🧾 НДС: {vat}"
+            f"{radio}"
+        )
+        return
+
     if codes and not found_codes:
         await safe_send(message, f"❌ Код не найден: <code>{', '.join(missing)}</code>")
         return
