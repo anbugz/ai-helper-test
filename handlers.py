@@ -179,6 +179,40 @@ async def handle_document(message: Message):
         await message.answer(f"Ошибка: {e}")
 
 
+def _strip_header_dup(answer: str) -> str:
+    """Вырезает дубль шапки с кодом, если DeepSeek проигнорировал инструкцию.
+    
+    Убирает блоки типа:
+    📋 Код: 12345678
+    🔧 Название...
+    💰 Пошлина: X%
+    🧾 НДС: 22%
+    """
+    lines = answer.split("\n")
+    # Ищем где начинается НАСТОЯЩИЙ ответ (📊 Таможенная стоимость / Пошлина / etc)
+    real_start = 0
+    for i, line in enumerate(lines):
+        ls = line.strip().lower()
+        if ls.startswith("📊 тамож") or ls.startswith("пошлин") or ls.startswith("ндс") or ls.startswith("📊 платеж"):
+            real_start = i
+            break
+    # Если нашли реальный старт и перед ним есть шапка с кодом — вырезаем
+    if real_start > 0:
+        # Проверяем, что перед real_start идёт шапка (📋 Код / 🔧 / 💰 / 🧾)
+        header_lines = 0
+        for j in range(real_start - 1, -1, -1):
+            ls = lines[j].strip().lower()
+            if any(ls.startswith(k) for k in ("📋 код", "🔧", "💰 пошлин", "🧾 ндс", "⚡ радио")):
+                header_lines += 1
+            elif ls == "":
+                continue
+            else:
+                break
+        if header_lines >= 2:  # Нашли шапку дубль
+            return "\n".join(lines[real_start:]).strip()
+    return answer
+
+
 def _format_payments_box(answer: str, currency: str, rates: dict = None) -> str:
     """Только Пошлина/НДС/Сбор/ИТОГО в рамке. Без ТС. Если rates — добавляет рублевый эквивалент."""
     import re
@@ -355,6 +389,9 @@ async def handle_text(message: Message):
 
     msgs = build_messages(user_id, user_text, extra_context=extra)
     answer = await ask_deepseek(msgs)
+
+    # === ВЫРЕЗАЕМ дубль шапки от DeepSeek ===
+    answer = _strip_header_dup(answer)
 
     # === ШАПКА (одна, сверху) ===
     header = ""
