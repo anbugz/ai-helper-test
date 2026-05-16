@@ -18,6 +18,7 @@ def init_db() -> None:
     db_dir = os.path.dirname(DB_PATH)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
+    logger.info(f"[DB] Using database at: {DB_PATH}")
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("PRAGMA journal_mode=WAL")

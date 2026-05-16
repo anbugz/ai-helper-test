@@ -12,14 +12,17 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID", "0")
 ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW.isdigit() else 0
-# По умолчанию: bothost создает /app/data как volume (DATA_DIR)
-# Для локальной разработки: ../bot-data/bot.db
-if os.path.isdir("/app/data"):
-    _default_db = "/app/data/bot.db"
+# bothost: DATA_DIR env variable указывает persistent-путь
+# Если DATA_DIR задан — используем его. Иначе — папка проекта.
+_DATA_DIR = os.getenv("DATA_DIR", "")
+if _DATA_DIR:
+    _default_db = os.path.join(_DATA_DIR, "bot.db")
 else:
-    _parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    _default_db = os.path.join(_parent, "bot-data", "bot.db")
+    _default_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.db")
 DB_PATH = os.getenv("DB_PATH", _default_db)
+
+# Показываем реальный путь к базе при импорте
+print(f"[CONFIG] DB_PATH = {DB_PATH}", flush=True)
 
 # ==================== ВЕРСИЯ ====================
 VERSION = "rev10 | 2026-05-16 | АБ"
