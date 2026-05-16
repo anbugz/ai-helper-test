@@ -1,6 +1,5 @@
 """
 utils.py — хелперы: курсы ЦБ, safe_send, rate_limit, валюты, DeepSeek, построение сообщений.
-Курсы ЦБ через urllib (встроено в Python). openai — отложенный импорт.
 """
 import asyncio
 import re
@@ -17,9 +16,6 @@ from config import (
 )
 from database import get_dialog_history
 
-# ------------------------------------------------------------------
-# Rate limit
-# ------------------------------------------------------------------
 _last_request_time: Dict[int, datetime] = {}
 
 
@@ -32,17 +28,9 @@ def check_rate_limit(user_id: int) -> bool:
     return True
 
 
-# ------------------------------------------------------------------
-# Московское время
-# ------------------------------------------------------------------
-
 def now_msk() -> datetime:
     return datetime.utcnow() + timedelta(hours=3)
 
-
-# ------------------------------------------------------------------
-# Определение базовой валюты
-# ------------------------------------------------------------------
 
 def detect_base_currency(text: str) -> str:
     text_lower = text.lower()
@@ -63,7 +51,6 @@ def detect_base_currency(text: str) -> str:
 
 
 def extract_currencies(text: str) -> Dict[str, str]:
-    """Извлекает все упомянутые валюты из текста."""
     found = {}
     text_lower = text.lower()
     for synonym, code in CURRENCY_SYNONYMS.items():
@@ -72,15 +59,10 @@ def extract_currencies(text: str) -> Dict[str, str]:
     return found
 
 
-# ------------------------------------------------------------------
-# Курсы ЦБ РФ
-# ------------------------------------------------------------------
-
 CBR_URL = "https://www.cbr.ru/scripts/XML_daily.asp"
 
 
 async def get_cbr_rates() -> Dict[str, str]:
-    """Получает курсы ЦБ РФ: CNY, USD, EUR. urllib (встроено в Python, не нужен pip)."""
     rates = {"CNY": "н/д", "USD": "н/д", "EUR": "н/д", "DATE": ""}
     try:
         def _fetch():
@@ -105,7 +87,6 @@ async def get_cbr_rates() -> Dict[str, str]:
 
 
 def format_cross_rates(rates: Dict[str, str]) -> str:
-    """Форматирует кросс-курсы для отображения."""
     parts = []
     try:
         cny = float(rates.get("CNY", 0))
@@ -122,12 +103,7 @@ def format_cross_rates(rates: Dict[str, str]) -> str:
     return ", ".join(parts) if parts else "н/д"
 
 
-# ------------------------------------------------------------------
-# DeepSeek API
-# ------------------------------------------------------------------
-
 async def ask_deepseek(messages: List[Dict]) -> str:
-    """Отправляет запрос к DeepSeek API. Отложенный импорт openai на случай если не установлен."""
     try:
         import openai
     except ImportError:
@@ -141,7 +117,7 @@ async def ask_deepseek(messages: List[Dict]) -> str:
             model="deepseek-chat",
             messages=messages,
             temperature=0.2,
-            max_tokens=1500,  # достаточно для сводки по коду + состава ТС + платежей
+            max_tokens=1500,
         )
         return response.choices[0].message.content or ""
     except Exception as e:
@@ -150,7 +126,6 @@ async def ask_deepseek(messages: List[Dict]) -> str:
 
 
 def build_messages(user_id: int, user_text: str, extra_context: str = "") -> List[Dict]:
-    """Строит список сообщений для DeepSeek: системный промпт + история + текущий запрос."""
     msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
     if extra_context:
         msgs.append({"role": "system", "content": extra_context})
@@ -161,15 +136,9 @@ def build_messages(user_id: int, user_text: str, extra_context: str = "") -> Lis
     return msgs
 
 
-# ------------------------------------------------------------------
-# Парсинг дат из текста (для экспорта логов)
-# ------------------------------------------------------------------
-
 def parse_date_range(text: str) -> tuple:
-    """Извлекает даты из текста для фильтрации логов."""
     now = datetime.utcnow()
     text_lower = text.lower()
-
     if "сегодня" in text_lower:
         today = now.strftime("%Y-%m-%d")
         return today, today
@@ -179,23 +148,15 @@ def parse_date_range(text: str) -> tuple:
     if "неделю" in text_lower or "за неделю" in text_lower:
         start = (now - timedelta(days=7)).strftime("%Y-%m-%d")
         return start, now.strftime("%Y-%m-%d")
-
-    # Формат: с 01.05.2026 по 05.05.2026
     dates = re.findall(r"(\d{2})[.](\d{2})[.](\d{4})", text)
     if len(dates) >= 2:
         d1 = f"{dates[0][2]}-{dates[0][1]}-{dates[0][0]}"
         d2 = f"{dates[1][2]}-{dates[1][1]}-{dates[1][0]}"
         return d1, d2
-
     return None, None
 
 
-# ------------------------------------------------------------------
-# safe_send
-# ------------------------------------------------------------------
-
 async def safe_send(message: Message, text: str, chunk: int = 4000) -> None:
-    """Отправляет текст частями. При ошибке HTML — fallback в plain text."""
     try:
         if len(text) <= chunk:
             await message.answer(text)

@@ -33,9 +33,6 @@ from utils import (
 )
 
 
-# ==============================================================================
-# /start
-# ==============================================================================
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
@@ -45,9 +42,6 @@ async def cmd_start(message: Message):
     )
 
 
-# ==============================================================================
-# /help
-# ==============================================================================
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     await message.answer(
@@ -60,24 +54,17 @@ async def cmd_help(message: Message):
     )
 
 
-# ==============================================================================
-# /clear
-# ==============================================================================
 @dp.message(Command("clear"))
 async def cmd_clear(message: Message):
     clear_history(message.from_user.id)
     await message.answer("🗑 История диалога очищена.")
 
 
-# ==============================================================================
-# /brief — только АБ
-# ==============================================================================
 @dp.message(Command("brief"))
 async def cmd_brief(message: Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("⛔ <b>Нет доступа.</b>")
         return
-    # ... полный текст brief из rev10
     await message.answer(
         "<b>BRIEF — AI Helper West Asia</b>\n\n"
         "<b>НДС:</b> базовая 22% с 01.01.2026. Льготная 10% — продовольствие, детские, медицина, печать.\n"
@@ -89,9 +76,6 @@ async def cmd_brief(message: Message):
     )
 
 
-# ==============================================================================
-# /topics — только АБ
-# ==============================================================================
 @dp.message(Command("topics"))
 async def cmd_topics(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -105,9 +89,6 @@ async def cmd_topics(message: Message):
     await message.answer("<b>Темы в базе знаний:</b>\n" + "\n".join(lines))
 
 
-# ==============================================================================
-# /learn — только АБ
-# ==============================================================================
 @dp.message(Command("learn"))
 async def cmd_learn(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -126,9 +107,6 @@ async def cmd_learn(message: Message):
     )
 
 
-# ==============================================================================
-# /done — только АБ (в контексте /learn)
-# ==============================================================================
 @dp.message(Command("done"))
 async def cmd_done(message: Message):
     user_id = message.from_user.id
@@ -149,9 +127,6 @@ async def cmd_done(message: Message):
         await message.answer("❌ Нет контента — тема не сохранена.")
 
 
-# ==============================================================================
-# /updatecodes — только АБ
-# ==============================================================================
 @dp.message(Command("updatecodes"))
 async def cmd_updatecodes(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -166,16 +141,12 @@ async def cmd_updatecodes(message: Message):
     )
 
 
-# ==============================================================================
-# ОБРАБОТКА ДОКУМЕНТОВ
-# ==============================================================================
 @dp.message(F.document)
 async def handle_document(message: Message):
     doc = message.document
     user_id = message.from_user.id
     file_name = (doc.file_name or "").lower()
 
-    # Режим обучения — приоритет
     if user_id in LEARN_MODE and LEARN_MODE[user_id].get("waiting_for") == "content":
         if not any(file_name.endswith(ext) for ext in [".txt", ".docx", ".xlsx"]):
             await message.answer("В режиме обучения принимаю только .txt, .docx, .xlsx")
@@ -203,7 +174,6 @@ async def handle_document(message: Message):
             await message.answer(f"Ошибка: {e}")
         return
 
-    # Обычный режим — только xlsx
     if not file_name.endswith(".xlsx"):
         await message.answer("Пока принимаю только .xlsx файлы.")
         return
@@ -228,7 +198,6 @@ async def handle_document(message: Message):
             await message.answer("Не удалось прочитать файл.")
             return
 
-        # Автозагрузка справочника ТН ВЭД
         has_tnved_codes = any(
             isinstance(r[0], str) and re.match(r"\d{10}", r[0].replace(" ", ""))
             for r in data if r
@@ -254,7 +223,6 @@ async def handle_document(message: Message):
             )
             return
 
-        # Показ данных
         lines = ["<b>Данные из Excel:</b>"]
         data_rows = [r for r in data if r and any(str(c).strip() for c in r)]
         for i, row in enumerate(data_rows[:15], 1):
@@ -270,24 +238,18 @@ async def handle_document(message: Message):
 
 
 def _format_payments_box(answer: str, currency: str) -> str:
-    """Парсит Пошлина / НДС / Сбор / ИТОГО из ответа DeepSeek.
-    
-    Возвращает ТОЛЬКО платежи в красивой копируемой рамке (без ТС).
-    """
+    """Парсит Пошлина / НДС / Сбор / ИТОГО. Только платежи в рамке (без ТС)."""
     import re
     lines = answer.split("\n")
     data: dict = {}
-    
     cur_pat = {"USD": r"USD|\\$", "EUR": r"EUR|€", "CNY": r"CNY|CNH|¥", "RUB": r"RUB|₽"}
     cur_re = cur_pat.get(currency, re.escape(currency))
-    
     KEYWORDS = {
         "пошлина": ("пошлин", "таможенная пошлина", "customs duty"),
         "ндс": ("ндс", "налог на добавленную", "vat"),
         "сбор": ("сбор", "таможенный сбор", "customs fee"),
         "итого": ("итого", "всего платеж", "total"),
     }
-    
     for line in lines:
         ls = line.strip().lower()
         if len(ls) < 3 or not re.search(r"\d", ls):
@@ -302,54 +264,34 @@ def _format_payments_box(answer: str, currency: str) -> str:
                     if val:
                         data[key] = val
                 break
-    
-    # Строим рамку только если есть хотя бы пошлина или НДС
     if "пошлина" not in data and "ндс" not in data:
         return ""
-    
-    # Фиксированная ширина колонок под копирование
     label_w, val_w = 10, 14
     top = f"┌{'─' * (label_w + 2)}┬{'─' * (val_w + 2)}┐"
     hdr = f"│ {'Платеж':<{label_w}} │ {currency:>{val_w}} │"
     sep = f"├{'─' * (label_w + 2)}┼{'─' * (val_w + 2)}┤"
     bot = f"└{'─' * (label_w + 2)}┴{'─' * (val_w + 2)}┘"
-    
     rows = []
     for key in ("пошлина", "ндс", "сбор"):
         if key in data:
             label = {"пошлина": "Пошлина", "ндс": "НДС", "сбор": "Сбор"}[key]
             rows.append(f"│ {label:<{label_w}} │ {data[key]:>{val_w}} │")
-    
     body = "\n".join(rows)
-    
     total_row = ""
     if "итого" in data:
         total_row = f"\n{sep}\n│ {'ИТОГО':<{label_w}} │ {data['итого']:>{val_w}} │"
-    
     return (
         f"\n\n📊 <b>Платежи</b>\n"
-        f"<code>"
-        f"{top}\n"
-        f"{hdr}\n"
-        f"{sep}\n"
-        f"{body}"
-        f"{total_row}\n"
-        f"{bot}"
-        f"</code>"
+        f"<code>{top}\n{hdr}\n{sep}\n{body}{total_row}\n{bot}</code>"
     )
 
 
-# ==============================================================================
-# ОСНОВНОЙ ХЭНДЛЕР ТЕКСТА
-# ==============================================================================
 @dp.message(F.text)
 async def handle_text(message: Message):
     user_id = message.from_user.id
     user_text = message.text or ""
     if not user_text:
         return
-
-    # Игнорируем команды
     if user_text.startswith("/"):
         return
 
@@ -370,7 +312,7 @@ async def handle_text(message: Message):
             )
             return
 
-    # 2. "Несогласен" / "неверно" — замечание на ответ бота
+    # 2. "Несогласен" / "неверно"
     dispute_keywords = [
         "несогласен", "не согласен", "неправильно", "ошибка",
         "не так", "неверно", "неверный", "спорю", "не верно",
@@ -386,7 +328,6 @@ async def handle_text(message: Message):
             original=original,
             correction=user_text,
         )
-        # Уведомление АБ
         if ADMIN_ID:
             try:
                 await bot.send_message(
@@ -417,66 +358,20 @@ async def handle_text(message: Message):
     codes = extract_tnved_codes(user_text)
     radio_detected = any(is_radio_electronics(c) for c in codes)
 
-    # --- ПРОВЕРКА КОДОВ ТН ВЭД В SQLITE ---
     from database import get_tnved_from_db as _get_tnved_db
 
-    # Быстрый ответ: если запрос ТОЛЬКО код(ы) ТН ВЭД без просьбы о расчёте
     calc_words = ("инвойс", "сумма", "стоимость", "расчёт", "платеж", "пошлина",
                   "ндс", "сбор", "таможенная", "тс", "фрахт", "страховк", "узнать платеж",
                   "сколько плат", "какая пошлина", "какой сбор", "посчитай", "сколько будет")
     is_calculation_request = any(w in user_text.lower() for w in calc_words)
 
-    tnved_context = ""
-    missing_codes = []
     found_codes = []
+    missing_codes = []
     if codes:
         for code in codes[:3]:
             info = _get_tnved_db(code)
             if info:
                 found_codes.append(info)
-                pt = info["parsed_tariff"]
-                # Быстрый короткий ответ (только код, без расчётов)
-                if not is_calculation_request:
-                    # Быстрый ответ: код + ставка + тип + НДС + радио
-                    quick = (
-                        f"📋 <code>{info['code']}</code>\n"
-                        f"🔧 {info['name']}\n"
-                        f"💰 {info['tariff']}"
-                    )
-                    # Тип пошлины
-                    if pt.get("type") in ("min", "plus", "fixed_eur"):
-                        quick += f"\n📊 Комбинированная ({pt['formula']})"
-                    elif pt.get("type") == "fixed_usd":
-                        quick += f"\n📊 Фикс. USD ({pt['formula']})"
-                    elif pt.get("type") == "percent":
-                        quick += "\n📊 Адвалорная"
-                    # НДС
-                    quick += "\n🧾 НДС: 22% (базовая)"
-                    if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")):
-                        quick += " / 10% (льготная)"
-                    else:
-                        quick += ", проверьте льготную 10%"
-                    # Радиоэлектроника
-                    if is_radio_electronics(info['code']):
-                        quick += "\n⚡ Радиоэлектроника: сбор 73 860 ₽"
-                    await message.answer(quick)
-                    return
-                # Вариант 2 — визуальная подача с эмодзи (для расчётов)
-                tnved_context += (
-                    f"\n📋 <b>Код ТН ВЭД:</b> <code>{info['code']}</code>\n"
-                    f"🔧 <b>Наименование:</b> {info['name'][:80]}\n"
-                    f"💰 <b>Ставка пошлины:</b> {info['tariff']}\n"
-                )
-                if pt.get("formula") and pt.get("type") not in ("percent", "unknown"):
-                    tnved_context += f"📊 <b>Расшифровка:</b> {pt['formula']}\n"
-                if info.get("has_euro_component"):
-                    tnved_context += (
-                        "⚠️ <b>Внимание:</b> пошлина комбинированная — "
-                        "считаем 2 значения и берём МАКСИМУМ\n"
-                        "📏 <b>Нужен вес товара</b> для евро-компоненты\n"
-                    )
-                else:
-                    tnved_context += "✅ <b>Вес не требуется</b>\n"
             else:
                 missing_codes.append(code)
 
@@ -487,11 +382,6 @@ async def handle_text(message: Message):
             f"📋 <code>{', '.join(missing_codes)}</code>"
         )
         return
-
-    if missing_codes:
-        tnved_context += (
-            f"\n⚠️ <b>Коды не найдены:</b> {', '.join(missing_codes)}\n"
-        )
 
     # Определяем валюту и страхование
     base_currency = detect_base_currency(user_text)
@@ -534,12 +424,12 @@ async def handle_text(message: Message):
     msgs = build_messages(user_id, user_text, extra_context=extra)
     answer = await ask_deepseek(msgs)
 
-    # Шапка с краткой инфо о коде (всегда перед ответом)
+    # Шапка с краткой инфо о коде (сверху, одна)
     header = ""
     if found_codes:
         info = found_codes[0]
         pt = info["parsed_tariff"]
-        header = f"\n📋 <b>Код:</b> <code>{info['code']}</code>\n"
+        header = f"📋 <b>Код:</b> <code>{info['code']}</code>\n"
         header += f"🔧 {info['name'][:70]}\n"
         header += f"💰 <b>Пошлина:</b> {info['tariff']}"
         if pt.get("type") in ("min", "plus", "fixed_eur"):
@@ -547,14 +437,20 @@ async def handle_text(message: Message):
         elif pt.get("type") == "percent":
             header += " — адвалорная"
         header += "\n"
-        # НДС
         vat_rate = "10% (льготная)" if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")) else "22% (базовая)"
         header += f"🧾 <b>НДС:</b> {vat_rate}\n"
-        # Радиоэлектроника
         if any(is_radio_electronics(c) for c in codes):
             header += "⚡ <b>Радиоэлектроника:</b> сбор 73 860 ₽\n"
+        if missing_codes:
+            header += f"⚠️ <b>Коды не найдены:</b> {', '.join(missing_codes)}\n"
 
-    # Пост-обработка: рублевая сноска ТОЛЬКО если курса ещё нет в ответе
+    # Таблица платежей (без ТС)
+    if is_calculation_request and base_currency != "RUB":
+        box = _format_payments_box(answer, base_currency)
+        if box:
+            answer += box
+
+    # Рублевая сноска в самом конце
     if rates and base_currency != "RUB":
         rate = rates.get(base_currency, "")
         if rate and rate != "н/д" and rate not in answer:
