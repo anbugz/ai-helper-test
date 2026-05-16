@@ -269,106 +269,74 @@ async def handle_document(message: Message):
         await message.answer(f"Ошибка обработки файла: {e}")
 
 
-def _format_calc_table(answer: str, currency: str) -> str:
-    """Парсит цифры из ответа DeepSeek и формирует копируемую псевдо-таблицу.
+def _format_payments_box(answer: str, currency: str) -> str:
+    """Парсит Пошлина / НДС / Сбор / ИТОГО из ответа DeepSeek.
     
-    Ловит ТС / Пошлина / НДС / Сбор / ИТОГО в разных вариантах написания.
+    Возвращает ТОЛЬКО платежи в красивой копируемой рамке (без ТС).
     """
     import re
     lines = answer.split("\n")
     data: dict = {}
     
-    # Валютные символы для расширенного поиска
-    currency_syms = {"USD": r"USD|\\$", "EUR": r"EUR|€", "CNY": r"CNY|CNH|¥", "RUB": r"RUB|₽"}
-    cur_pat = currency_syms.get(currency, re.escape(currency))
+    cur_pat = {"USD": r"USD|\\$", "EUR": r"EUR|€", "CNY": r"CNY|CNH|¥", "RUB": r"RUB|₽"}
+    cur_re = cur_pat.get(currency, re.escape(currency))
     
-    # Ключевые слова для каждой статьи (в lower case)
     KEYWORDS = {
-        "тс": ("тс", "таможенная стоимость", "таможенная стоим", "тамож стоимость",
-               "customs value", "стоимость товара", "инвойс", "invoice value",
-               "стоимость для целей", "налоговая база", "таможенная база"),
-        "пошлина": ("пошлин", "таможенная пошлина", "customs duty", "duty"),
-        "ндс": ("ндс", "налог на добавленную", "vat", "налог"),
-        "сбор": ("сбор", "таможенный сбор", "customs fee", "fee", "пошлина за оформлен"),
-        "итого": ("итого", "всего", "total", "всего платежей", "итого платежей", "сумма платежей"),
+        "пошлина": ("пошлин", "таможенная пошлина", "customs duty"),
+        "ндс": ("ндс", "налог на добавленную", "vat"),
+        "сбор": ("сбор", "таможенный сбор", "customs fee"),
+        "итого": ("итого", "всего платеж", "total"),
     }
     
     for line in lines:
-        line_stripped = line.strip().lower()
-        # Пропускаем пустые, короткие, и строки без цифр
-        if len(line_stripped) < 3 or not re.search(r"\d", line_stripped):
+        ls = line.strip().lower()
+        if len(ls) < 3 or not re.search(r"\d", ls):
             continue
-        
         for key, keywords in KEYWORDS.items():
-            # Проверяем, что строка содержит ключевое слово и ещё не заполнена
             if key in data:
                 continue
-            if any(kw in line_stripped for kw in keywords):
-                # Ищем число + валюту (символ или код)
-                m = re.search(r"([\d\s,.]+)\s*(?:" + cur_pat + r")", line, re.IGNORECASE)
+            if any(kw in ls for kw in keywords):
+                m = re.search(r"([\d\s,.]+)\s*(?:" + cur_re + r")", line, re.IGNORECASE)
                 if m:
-                    val = m.group(1).strip().replace(" ", "").replace(",", ".")
-                    # Берём первое число в строке (если валюта не найдена)
-                    if not val:
-                        m2 = re.search(r"([\d\s,.]+)", line)
-                        if m2:
-                            val = m2.group(1).strip().replace(" ", "").replace(",", ".")
+                    val = m.group(1).strip().replace(" ", "")
                     if val:
                         data[key] = val
-                break  # Строка отнесена к одной статье
+                break
     
-    # Строим таблицу: нужна хотя бы ТС и ещё одна статья
-    has_payment = any(k in data for k in ("пошлина", "ндс", "сбор"))
-    if "тс" in data and has_payment:
-        table = f"\n\n📊 <b>Копируемая сводка</b>\n"
-        table += f"<code>"
-        table += f"┌──────────┬──────────────┐\n"
-        table += f"│ Статья   │ {currency:>12} │\n"
-        table += f"├──────────┼──────────────┤\n"
-        
-        rows = []
-        for key in ("тс", "пошлина", "ндс", "сбор"):
-            if key in data:
-                val = data[key]
-                label = {"тс": "ТС", "пошлина": "Пошлина", "ндс": "НДС", "сбор": "Сбор"}.get(key, key.upper())
-                rows.append(f"│ {label:<8} │ {val:>12} │")
-        
-        table += "\n".join(rows)
-        
-        if "итого" in data:
-            table += f"\n├──────────┼──────────────┤\n"
-            table += f"│ ИТОГО    │ {data['итого']:>12} │\n"
-        
-        table += f"└──────────┴──────────────┘"
-        table += f"</code>"
-        return table
+    # Строим рамку только если есть хотя бы пошлина или НДС
+    if "пошлина" not in data and "ндс" not in data:
+        return ""
     
-    # Fallback: если ТС не найдена, но есть платежи — всё равно таблица
-    if has_payment and ("пошлина" in data or "ндс" in data):
-        table = f"\n\n📊 <b>Копируемая сводка</b>\n"
-        table += f"<code>"
-        table += f"┌──────────┬──────────────┐\n"
-        table += f"│ Статья   │ {currency:>12} │\n"
-        table += f"├──────────┼──────────────┤\n"
-        
-        rows = []
-        for key in ("пошлина", "ндс", "сбор"):
-            if key in data:
-                val = data[key]
-                label = {"пошлина": "Пошлина", "ндс": "НДС", "сбор": "Сбор"}.get(key, key.upper())
-                rows.append(f"│ {label:<8} │ {val:>12} │")
-        
-        table += "\n".join(rows)
-        
-        if "итого" in data:
-            table += f"\n├──────────┼──────────────┤\n"
-            table += f"│ ИТОГО    │ {data['итого']:>12} │\n"
-        
-        table += f"└──────────┴──────────────┘"
-        table += f"</code>"
-        return table
+    # Фиксированная ширина колонок под копирование
+    label_w, val_w = 10, 14
+    top = f"┌{'─' * (label_w + 2)}┬{'─' * (val_w + 2)}┐"
+    hdr = f"│ {'Платеж':<{label_w}} │ {currency:>{val_w}} │"
+    sep = f"├{'─' * (label_w + 2)}┼{'─' * (val_w + 2)}┤"
+    bot = f"└{'─' * (label_w + 2)}┴{'─' * (val_w + 2)}┘"
     
-    return ""
+    rows = []
+    for key in ("пошлина", "ндс", "сбор"):
+        if key in data:
+            label = {"пошлина": "Пошлина", "ндс": "НДС", "сбор": "Сбор"}[key]
+            rows.append(f"│ {label:<{label_w}} │ {data[key]:>{val_w}} │")
+    
+    body = "\n".join(rows)
+    
+    total_row = ""
+    if "итого" in data:
+        total_row = f"\n{sep}\n│ {'ИТОГО':<{label_w}} │ {data['итого']:>{val_w}} │"
+    
+    return (
+        f"\n\n📊 <b>Платежи</b>\n"
+        f"<code>"
+        f"{top}\n"
+        f"{hdr}\n"
+        f"{sep}\n"
+        f"{body}"
+        f"{total_row}\n"
+        f"{bot}"
+        f"</code>"
+    )
 
 
 # ==============================================================================
@@ -541,8 +509,18 @@ async def handle_text(message: Message):
             f"Базовая валюта: {base_currency}. "
             f"НДС: 22% базовая, 10% льготная. "
         )
+        extra += (
+            "ТАМОЖЕННАЯ СТОИМОСТЬ (п. 1 ст. 40 ТК ЕАЭС) складывается из: "
+            "1) Инвойс (стоимость товара) + "
+            "2) Фрахт/транспорт до границы ЕАЭС + "
+            "3) Страховка + "
+            "4) Упаковка + "
+            "5) Посреднические комиссии и прочие платежи. "
+            "Если менеджер не указал фрахт/страховку — бери 0 и пиши (не указано). "
+            "ВСЕ компоненты ТС — в валюте инвойса. "
+        )
         if has_insurance:
-            extra += "Страхование — ВКЛЮЧИ в ТС (п. 1 ст. 40 ТК ЕАЭС). "
+            extra += "Страховка — ВКЛЮЧЕНА в ТС. "
         if tnved_context:
             extra += f"[ТН ВЭД ИЗ СПРАВОЧНИКА]{tnved_context}\n"
         extra += "НЕ придумывай ставки — используй ТОЛЬКО данные из справочника."
@@ -555,6 +533,32 @@ async def handle_text(message: Message):
     msgs = build_messages(user_id, user_text, extra_context=extra)
     answer = await ask_deepseek(msgs)
 
+    # Красивый блок платежей (копируемый)
+    if is_calculation_request and base_currency != "RUB":
+        box = _format_payments_box(answer, base_currency)
+        if box:
+            answer += box
+
+    # Шапка с краткой инфо о коде (всегда перед ответом)
+    header = ""
+    if found_codes:
+        info = found_codes[0]
+        pt = info["parsed_tariff"]
+        header = f"\n📋 <b>Код:</b> <code>{info['code']}</code>\n"
+        header += f"🔧 {info['name'][:70]}\n"
+        header += f"💰 <b>Пошлина:</b> {info['tariff']}"
+        if pt.get("type") in ("min", "plus", "fixed_eur"):
+            header += f" — комбинированная ({pt['formula']})"
+        elif pt.get("type") == "percent":
+            header += " — адвалорная"
+        header += "\n"
+        # НДС
+        vat_rate = "10% (льготная)" if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")) else "22% (базовая)"
+        header += f"🧾 <b>НДС:</b> {vat_rate}\n"
+        # Радиоэлектроника
+        if any(is_radio_electronics(c) for c in codes):
+            header += "⚡ <b>Радиоэлектроника:</b> сбор 73 860 ₽\n"
+
     # Пост-обработка: рублевая сноска ТОЛЬКО если курса ещё нет в ответе
     if rates and base_currency != "RUB":
         rate = rates.get(base_currency, "")
@@ -564,16 +568,14 @@ async def handle_text(message: Message):
                 f"1 {base_currency} = {rate} ₽</i>"
             )
 
-    # Пост-обработка: копируемая таблица
-    if is_calculation_request and base_currency != "RUB":
-        table = _format_calc_table(answer, base_currency)
-        if table:
-            answer += table
-
     # Пост-обработка НДС
     if not any(k in answer.lower() for k in ("ндс", "налог на добавленную", "nds")):
         if any(w in user_text.lower() for w in ("расчёт", "стоимость", "таможенная", "пошлина", "сбор", "ндс")):
             answer += "\n\n<i>НДС: базовая 22% с 01.01.2026, льготная 10%.</i>"
+
+    # Склеиваем шапку + ответ
+    if header:
+        answer = header + "\n" + answer
 
     # Двойная защита по радиоэлектронике
     if radio_detected and "⚡" not in answer and "73860" not in answer:
