@@ -453,13 +453,39 @@ async def handle_text(message: Message):
     msgs = build_messages(user_id, user_text, extra_context=extra)
     answer = await ask_deepseek(msgs)
 
-    # Пост-обработка валюты
-    if base_currency != "RUB" and base_currency not in answer.upper() and rates:
-        answer += (
-            f"\n\n<i>Курс ЦБ РФ на {rates.get('DATE', '')}: "
-            f"CNY={rates.get('CNY', '')}₽, USD={rates.get('USD', '')}₽, EUR={rates.get('EUR', '')}₽. "
-            f"Расчёт в {base_currency}, рубли — справочно.</i>"
-        )
+    # Пост-обработка: рублевая сноска только в конце
+    if rates and base_currency != "RUB":
+        rate = rates.get(base_currency, "")
+        if rate and rate != "н/д":
+            import re
+            # Ищем ТС в ответе
+            ts_patterns = [
+                r"ТС[=:]?\s*([\d\s,.]+)\s*" + re.escape(base_currency),
+                r"таможенная\s+стоимость[=:]?\s*([\d\s,.]+)\s*" + re.escape(base_currency),
+                r"инвойс[=:]?\s*([\d\s,.]+)\s*" + re.escape(base_currency),
+            ]
+            ts_rub_str = ""
+            for pat in ts_patterns:
+                m = re.search(pat, answer, re.IGNORECASE)
+                if m:
+                    ts_clean = m.group(1).replace(" ", "").replace(",", ".")
+                    try:
+                        ts_rub = float(ts_clean) * float(rate)
+                        ts_rub_str = f"ТС ≈ {ts_rub:,.0f} ₽"
+                    except ValueError:
+                        pass
+                    break
+            if ts_rub_str:
+                answer += (
+                    f"\n\nℹ️ <i>По курсу ЦБ РФ на {rates.get('DATE', 'сегодня')}:</i>\n"
+                    f"<i>1 {base_currency} = {rate} ₽</i>\n"
+                    f"<i>{ts_rub_str}</i>"
+                )
+            else:
+                answer += (
+                    f"\n\nℹ️ <i>Курс ЦБ РФ на {rates.get('DATE', 'сегодня')}: "
+                    f"1 {base_currency} = {rate} ₽</i>"
+                )
 
     # Пост-обработка НДС
     if not any(k in answer.lower() for k in ("ндс", "налог на добавленную", "nds")):
