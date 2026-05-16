@@ -21,10 +21,10 @@ from database import (
     get_dialogs_for_export, create_logs_xlsx,
 )
 from parsers import parse_xlsx, parse_docx, parse_txt, _extract_codes_from_rows
+import tnved_engine
 from tnved_engine import (
     load_tnved_rows, get_tnved_from_cache,
     is_radio_electronics, extract_tnved_codes,
-    _TNVED_ROWS_CACHE,
 )
 from utils import (
     check_rate_limit, now_msk, detect_base_currency,
@@ -237,7 +237,7 @@ async def handle_document(message: Message):
             load_tnved_rows(data)
             await message.answer(
                 f"📋 <b>Справочник ТН ВЭД загружен</b>\n"
-                f"Кодов в кэше: {len(_TNVED_ROWS_CACHE)}\n"
+                f"Кодов в кэше: {len(tnved_engine._TNVED_ROWS_CACHE)}\n"
                 f"Теперь бот берёт реальные ставки из файла."
             )
 
@@ -347,22 +347,15 @@ async def handle_text(message: Message):
     codes = extract_tnved_codes(user_text)
     radio_detected = any(is_radio_electronics(c) for c in codes)
 
-    # --- ЖЁСТКАЯ ПРОВЕРКА КОДОВ ТН ВЭД ---
-    if codes and not _TNVED_ROWS_CACHE:
-        await safe_send(
-            message,
-            f"⚠️ <b>Код ТН ВЭД обнаружен, но справочник не загружен</b>\n\n"
-            f"Обнаруженные коды: {', '.join(codes[:3])}\n\n"
-            f"Для расчёта загрузите файл <code>TWS_TNVED_*.xlsx</code>."
-        )
-        return
+    # --- ПРОВЕРКА КОДОВ ТН ВЭД В SQLITE (bothost: кэш в памяти не надёжен между процессами) ---
+    from database import get_tnved_from_db as _get_tnved_db
 
     tnved_context = ""
     missing_codes = []
     found_codes = []
-    if codes and _TNVED_ROWS_CACHE:
+    if codes:
         for code in codes[:3]:
-            info = get_tnved_from_cache(code)
+            info = _get_tnved_db(code)
             if info:
                 found_codes.append(info)
                 pt = info["parsed_tariff"]
