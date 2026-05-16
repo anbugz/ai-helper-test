@@ -182,6 +182,9 @@ async def handle_document(message: Message):
 def _format_payments_box(answer: str, currency: str, rates: dict = None) -> str:
     """Только Пошлина/НДС/Сбор/ИТОГО в рамке. Без ТС. Если rates — добавляет рублевый эквивалент."""
     import re
+    # Защита от дубля: если таблица уже есть в answer — не генерируем
+    if "Платежи" in answer and ("┌─" in answer or "───" in answer):
+        return ""
     lines = answer.split("\n")
     data: dict = {}
     cur_pat = {"USD": r"USD|\\$", "EUR": r"EUR|€", "CNY": r"CNY|CNH|¥", "RUB": r"RUB|₽"}
@@ -375,9 +378,11 @@ async def handle_text(message: Message):
 
     # === ТАБЛИЦА ПЛАТЕЖЕЙ (одна, без ТС) ===
     if is_calc and base_cur != "RUB":
-        box = _format_payments_box(answer, base_cur, rates)
-        if box:
-            answer += box
+        # Защита от дубля: если таблица уже есть — не добавляем
+        if "┌─" not in answer and "Платежи" not in answer and "Пошлина" not in answer[-200:]:
+            box = _format_payments_box(answer, base_cur, rates)
+            if box:
+                answer += box
 
     # Курс ЦБ уже в таблице — отдельная сноска не нужна
     if rates and base_cur != "RUB":
