@@ -12,8 +12,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID", "0")
 ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW.isdigit() else 0
-# По умолчанию база на уровень выше проекта — переживает git pull / rm -rf проекта
-_default_db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot-data", "bot.db")
+# По умолчанию: bothost создает /app/data как volume (DATA_DIR)
+# Для локальной разработки: ../bot-data/bot.db
+if os.path.isdir("/app/data"):
+    _default_db = "/app/data/bot.db"
+else:
+    _parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _default_db = os.path.join(_parent, "bot-data", "bot.db")
 DB_PATH = os.getenv("DB_PATH", _default_db)
 
 # ==================== ВЕРСИЯ ====================
