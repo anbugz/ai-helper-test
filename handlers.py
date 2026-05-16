@@ -351,10 +351,10 @@ async def handle_text(message: Message):
     from database import get_tnved_from_db as _get_tnved_db
 
     # Быстрый ответ: если запрос ТОЛЬКО код(ы) ТН ВЭД без просьбы о расчёте
-    is_calculation_request = any(w in user_text.lower() for w in (
-        "инвойс", "сумма", "стоимость", "расчёт", "платеж", "пошлина",
-        "ндс", "сбор", "таможенная", "тс", "фрахт", "страховк",
-    )) or bool(re.search(r"\d{5,}(?!\d)", user_text)) and bool(re.search(r"\d{3,}", user_text))
+    calc_words = ("инвойс", "сумма", "стоимость", "расчёт", "платеж", "пошлина",
+                  "ндс", "сбор", "таможенная", "тс", "фрахт", "страховк", "узнать платеж",
+                  "сколько плат", "какая пошлина", "какой сбор", "посчитай", "сколько будет")
+    is_calculation_request = any(w in user_text.lower() for w in calc_words)
 
     tnved_context = ""
     missing_codes = []
