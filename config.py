@@ -12,9 +12,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID", "0")
 ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW.isdigit() else 0
-# bothost: /app/data — volume, переживает пересборку
-# Локально: папка проекта
-if os.getenv("DATA_DIR"):
+# bothost: /app/shared — persistent volume (Общее хранилище), переживает пересборку
+# DATA_DIR — запасной вариант. Локально: папка проекта.
+if os.getenv("SHARED_DIR"):
+    _default_db = os.path.join(os.environ["SHARED_DIR"], "bot.db")
+elif os.getenv("DATA_DIR"):
     _default_db = os.path.join(os.environ["DATA_DIR"], "bot.db")
 else:
     _default_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.db")
