@@ -88,15 +88,24 @@ def _row_to_tnved_dict(row: List[str]) -> dict:
 # ------------------------------------------------------------------
 
 def is_radio_electronics(code: str) -> bool:
-    """Проверяет по списку + по первым 2 цифрам группы."""
+    """Проверяет по списку + по первым 2 цифрам группы.
+    Для коротких шаблонов (≤6 цифр) — startswith (группы/подгруппы).
+    Для длинных шаблонов (≥8 цифр) — точное совпадение (полные коды).
+    """
     if not code:
         return False
     c = code.replace(" ", "").replace(".", "").strip()
     if len(c) >= 2 and c[:2] not in _RADIO_GROUPS:
         return False
     for pattern in RADIO_ELECTRONICS_CODES_SET:
-        if c.startswith(pattern):
-            return True
+        if len(pattern) <= 6:
+            # Короткий шаблон — проверяем начало (группа/подгруппа)
+            if c.startswith(pattern):
+                return True
+        else:
+            # Длинный шаблон — точное совпадение
+            if c == pattern:
+                return True
     # Кастомные коды из SQLite проверяются отдельно через get_custom_codes()
     return False
 

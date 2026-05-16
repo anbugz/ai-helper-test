@@ -270,62 +270,101 @@ async def handle_document(message: Message):
 
 
 def _format_calc_table(answer: str, currency: str) -> str:
-    """Парсит цифры из ответа DeepSeek и формирует копируемую псевдо-таблицу."""
+    """Парсит цифры из ответа DeepSeek и формирует копируемую псевдо-таблицу.
+    
+    Ловит ТС / Пошлина / НДС / Сбор / ИТОГО в разных вариантах написания.
+    """
     import re
     lines = answer.split("\n")
+    data: dict = {}
     
-    # Ищем строки с цифрами и валютой
-    data = {}
+    # Валютные символы для расширенного поиска
+    currency_syms = {"USD": r"USD|\\$", "EUR": r"EUR|€", "CNY": r"CNY|CNH|¥", "RUB": r"RUB|₽"}
+    cur_pat = currency_syms.get(currency, re.escape(currency))
+    
+    # Ключевые слова для каждой статьи (в lower case)
+    KEYWORDS = {
+        "тс": ("тс", "таможенная стоимость", "таможенная стоим", "тамож стоимость",
+               "customs value", "стоимость товара", "инвойс", "invoice value",
+               "стоимость для целей", "налоговая база", "таможенная база"),
+        "пошлина": ("пошлин", "таможенная пошлина", "customs duty", "duty"),
+        "ндс": ("ндс", "налог на добавленную", "vat", "налог"),
+        "сбор": ("сбор", "таможенный сбор", "customs fee", "fee", "пошлина за оформлен"),
+        "итого": ("итого", "всего", "total", "всего платежей", "итого платежей", "сумма платежей"),
+    }
+    
     for line in lines:
         line_stripped = line.strip().lower()
-        # ТС / Таможенная стоимость / Инвойс
-        if any(k in line_stripped for k in ("тс", "таможенная стоимость", "инвойс")):
-            m = re.search(r"([\d\s,.]+)\s*" + re.escape(currency), line, re.IGNORECASE)
-            if m and "тс" not in data:
-                data["тс"] = m.group(1).strip()
-        # Пошлина
-        elif "пошлин" in line_stripped:
-            m = re.search(r"([\d\s,.]+)\s*" + re.escape(currency), line, re.IGNORECASE)
-            if m:
-                data["пошлина"] = m.group(1).strip()
-        # НДС
-        elif "ндс" in line_stripped:
-            m = re.search(r"([\d\s,.]+)\s*" + re.escape(currency), line, re.IGNORECASE)
-            if m:
-                data["ндс"] = m.group(1).strip()
-        # Сбор
-        elif "сбор" in line_stripped and "радио" not in line_stripped:
-            m = re.search(r"([\d\s,.]+)\s*" + re.escape(currency), line, re.IGNORECASE)
-            if m:
-                data["сбор"] = m.group(1).strip()
-        # ИТОГО
-        elif "итого" in line_stripped:
-            m = re.search(r"([\d\s,.]+)\s*" + re.escape(currency), line, re.IGNORECASE)
-            if m:
-                data["итого"] = m.group(1).strip()
+        # Пропускаем пустые, короткие, и строки без цифр
+        if len(line_stripped) < 3 or not re.search(r"\d", line_stripped):
+            continue
+        
+        for key, keywords in KEYWORDS.items():
+            # Проверяем, что строка содержит ключевое слово и ещё не заполнена
+            if key in data:
+                continue
+            if any(kw in line_stripped for kw in keywords):
+                # Ищем число + валюту (символ или код)
+                m = re.search(r"([\d\s,.]+)\s*(?:" + cur_pat + r")", line, re.IGNORECASE)
+                if m:
+                    val = m.group(1).strip().replace(" ", "").replace(",", ".")
+                    # Берём первое число в строке (если валюта не найдена)
+                    if not val:
+                        m2 = re.search(r"([\d\s,.]+)", line)
+                        if m2:
+                            val = m2.group(1).strip().replace(" ", "").replace(",", ".")
+                    if val:
+                        data[key] = val
+                break  # Строка отнесена к одной статье
     
-    # Если нашли ТС и хотя бы пошлина — строим таблицу
-    if "тс" in data and ("пошлина" in data or "ндс" in data):
+    # Строим таблицу: нужна хотя бы ТС и ещё одна статья
+    has_payment = any(k in data for k in ("пошлина", "ндс", "сбор"))
+    if "тс" in data and has_payment:
         table = f"\n\n📊 <b>Копируемая сводка</b>\n"
         table += f"<code>"
-        table += f"┌──────────┬──────────┐\n"
-        table += f"│ Статья   │ {currency:>8} │\n"
-        table += f"├──────────┼──────────┤\n"
+        table += f"┌──────────┬──────────────┐\n"
+        table += f"│ Статья   │ {currency:>12} │\n"
+        table += f"├──────────┼──────────────┤\n"
         
         rows = []
         for key in ("тс", "пошлина", "ндс", "сбор"):
             if key in data:
                 val = data[key]
-                label = key.upper() if key != "тс" else "ТС"
-                rows.append(f"│ {label:<8} │ {val:>8} │")
+                label = {"тс": "ТС", "пошлина": "Пошлина", "ндс": "НДС", "сбор": "Сбор"}.get(key, key.upper())
+                rows.append(f"│ {label:<8} │ {val:>12} │")
         
         table += "\n".join(rows)
         
         if "итого" in data:
-            table += f"\n├──────────┼──────────┤\n"
-            table += f"│ ИТОГО    │ {data['итого']:>8} │\n"
+            table += f"\n├──────────┼──────────────┤\n"
+            table += f"│ ИТОГО    │ {data['итого']:>12} │\n"
         
-        table += f"└──────────┴──────────┘"
+        table += f"└──────────┴──────────────┘"
+        table += f"</code>"
+        return table
+    
+    # Fallback: если ТС не найдена, но есть платежи — всё равно таблица
+    if has_payment and ("пошлина" in data or "ндс" in data):
+        table = f"\n\n📊 <b>Копируемая сводка</b>\n"
+        table += f"<code>"
+        table += f"┌──────────┬──────────────┐\n"
+        table += f"│ Статья   │ {currency:>12} │\n"
+        table += f"├──────────┼──────────────┤\n"
+        
+        rows = []
+        for key in ("пошлина", "ндс", "сбор"):
+            if key in data:
+                val = data[key]
+                label = {"пошлина": "Пошлина", "ндс": "НДС", "сбор": "Сбор"}.get(key, key.upper())
+                rows.append(f"│ {label:<8} │ {val:>12} │")
+        
+        table += "\n".join(rows)
+        
+        if "итого" in data:
+            table += f"\n├──────────┼──────────────┤\n"
+            table += f"│ ИТОГО    │ {data['итого']:>12} │\n"
+        
+        table += f"└──────────┴──────────────┘"
         table += f"</code>"
         return table
     
@@ -516,39 +555,14 @@ async def handle_text(message: Message):
     msgs = build_messages(user_id, user_text, extra_context=extra)
     answer = await ask_deepseek(msgs)
 
-    # Пост-обработка: рублевая сноска только в конце
+    # Пост-обработка: рублевая сноска ТОЛЬКО если курса ещё нет в ответе
     if rates and base_currency != "RUB":
         rate = rates.get(base_currency, "")
-        if rate and rate != "н/д":
-            import re
-            # Ищем ТС в ответе
-            ts_patterns = [
-                r"ТС[=:]?\s*([\d\s,.]+)\s*" + re.escape(base_currency),
-                r"таможенная\s+стоимость[=:]?\s*([\d\s,.]+)\s*" + re.escape(base_currency),
-                r"инвойс[=:]?\s*([\d\s,.]+)\s*" + re.escape(base_currency),
-            ]
-            ts_rub_str = ""
-            for pat in ts_patterns:
-                m = re.search(pat, answer, re.IGNORECASE)
-                if m:
-                    ts_clean = m.group(1).replace(" ", "").replace(",", ".")
-                    try:
-                        ts_rub = float(ts_clean) * float(rate)
-                        ts_rub_str = f"ТС ≈ {ts_rub:,.0f} ₽"
-                    except ValueError:
-                        pass
-                    break
-            if ts_rub_str:
-                answer += (
-                    f"\n\nℹ️ <i>По курсу ЦБ РФ на {rates.get('DATE', 'сегодня')}:</i>\n"
-                    f"<i>1 {base_currency} = {rate} ₽</i>\n"
-                    f"<i>{ts_rub_str}</i>"
-                )
-            else:
-                answer += (
-                    f"\n\nℹ️ <i>Курс ЦБ РФ на {rates.get('DATE', 'сегодня')}: "
-                    f"1 {base_currency} = {rate} ₽</i>"
-                )
+        if rate and rate != "н/д" and rate not in answer:
+            answer += (
+                f"\n\nℹ️ <i>Курс ЦБ РФ на {rates.get('DATE', 'сегодня')}: "
+                f"1 {base_currency} = {rate} ₽</i>"
+            )
 
     # Пост-обработка: копируемая таблица
     if is_calculation_request and base_currency != "RUB":

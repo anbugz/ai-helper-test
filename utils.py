@@ -140,8 +140,8 @@ async def ask_deepseek(messages: List[Dict]) -> str:
         response = await client.chat.completions.create(
             model="deepseek-chat",
             messages=messages,
-            temperature=0.3,
-            max_tokens=2000,
+            temperature=0.2,  # ниже — меньше "творчества", больше точности
+            max_tokens=800,   # жёсткий лимит: 800 токенов ≈ 300-400 слов — достаточно для 5-8 строк
         )
         return response.choices[0].message.content or ""
     except Exception as e:
