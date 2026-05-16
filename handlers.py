@@ -519,25 +519,20 @@ async def handle_text(message: Message):
             "Если менеджер не указал фрахт/страховку — бери 0 и пиши (не указано). "
             "ВСЕ компоненты ТС — в валюте инвойса. "
         )
+        extra += (
+            "КОНВЕРТАЦИЯ ВАЛЮТ: если фрахт/страховка/упаковка указаны НЕ в валюте инвойса — "
+            "конвертируй через рубль ЦБ РФ (иностранная валюта → ₽ → валюта инвойса). "
+            "Например: фрахт 500 USD при инвойсе в CNY = 500 × USD/₽ ÷ CNY/₽. "
+        )
         if has_insurance:
             extra += "Страховка — ВКЛЮЧЕНА в ТС. "
-        if tnved_context:
-            extra += f"[ТН ВЭД ИЗ СПРАВОЧНИКА]{tnved_context}\n"
         extra += "НЕ придумывай ставки — используй ТОЛЬКО данные из справочника."
     except Exception as e:
         logger.error(f"Курсы ЦБ недоступны: {e}")
         extra = f"[КУРСЫ ЦБ РФ недоступны]. НДС: 22%/10%. Проверяй ставку по коду ТН ВЭД."
-        if tnved_context:
-            extra += f"[ТН ВЭД]{tnved_context}"
 
     msgs = build_messages(user_id, user_text, extra_context=extra)
     answer = await ask_deepseek(msgs)
-
-    # Красивый блок платежей (копируемый)
-    if is_calculation_request and base_currency != "RUB":
-        box = _format_payments_box(answer, base_currency)
-        if box:
-            answer += box
 
     # Шапка с краткой инфо о коде (всегда перед ответом)
     header = ""
