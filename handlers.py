@@ -359,33 +359,42 @@ async def handle_text(message: Message):
             if info:
                 found_codes.append(info)
                 pt = info["parsed_tariff"]
+                # Вариант 2 — визуальная подача с эмодзи
                 tnved_context += (
-                    f"\nКОД ТН ВЭД {info['code']}: {info['name'][:80]}. "
-                    f"ТАМОЖЕННАЯ СТАВКА: {info['tariff']}. "
+                    f"\n📋 <b>Код ТН ВЭД:</b> <code>{info['code']}</code>\n"
+                    f"🔧 <b>Наименование:</b> {info['name'][:80]}\n"
+                    f"💰 <b>Ставка пошлины:</b> {info['tariff']}\n"
                 )
-                if pt.get("formula"):
-                    tnved_context += f"Расшифровка: {pt['formula']}. "
+                if pt.get("formula") and pt.get("type") not in ("percent", "unknown"):
+                    tnved_context += f"📊 <b>Расшифровка:</b> {pt['formula']}\n"
                 if info.get("has_euro_component"):
                     tnved_context += (
-                        "ВАЖНО: пошлина комбинированная — считай 2 значения и бери МАКСИМУМ. "
-                        "Для евро-компоненты нужен ВЕС."
+                        "⚠️ <b>Внимание:</b> пошлина комбинированная — "
+                        "считаем 2 значения и берём МАКСИМУМ\n"
+                        "📏 <b>Нужен вес товара</b> для евро-компоненты\n"
                     )
+                else:
+                    tnved_context += "✅ <b>Вес не требуется</b> — простая адвалорная ставка\n"
             else:
                 missing_codes.append(code)
 
     if codes and not found_codes:
         await safe_send(
             message,
-            f"⚠️ <b>Код(ы) не найдены в справочнике</b>\n\n"
-            f"{', '.join(missing_codes)}\n\n"
-            f"Проверьте правильность или уточните у декларанта."
+            f"❌ <b>Код не найден в справочнике</b>\n\n"
+            f"📋 Проверьте код: <code>{', '.join(missing_codes)}</code>\n\n"
+            f"Возможные причины:\n"
+            f"• Опечатка в коде\n"
+            f"• Код изменился (обновлён справочник)\n"
+            f"• Нужно загрузить актуальный TWS_TNVED_*.xlsx\n\n"
+            f"📞 Уточните правильный код у декларанта."
         )
         return
 
     if missing_codes:
         tnved_context += (
-            f"\nВНИМАНИЕ: коды не найдены: {', '.join(missing_codes)}. "
-            f"Расчёт только для найденных."
+            f"\n⚠️ <b>Коды не найдены:</b> {', '.join(missing_codes)}\n"
+            f"📊 Расчёт произведён только для найденных кодов\n"
         )
 
     # Определяем валюту и страхование
