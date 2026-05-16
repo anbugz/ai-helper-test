@@ -222,9 +222,8 @@ def _format_payments_box(answer: str, currency: str, rates: dict = None, tariff_
     """Только Пошлина/НДС/Сбор/ИТОГО в рамке. Без ТС. Если rates — добавляет рублевый эквивалент.
     Если tariff_info — добавляет ставки в подписи (Пошлина 0%, НДС 22% и т.д.)."""
     import re
-    # Защита от дубля: если таблица уже есть в answer — не генерируем
-    # Проверяем по уникальным маркерам: <pre> блок + рублевая сноска
-    if "по курсу ЦБ РФ" in answer and ("───" in answer or "<pre>" in answer):
+    # Защита от дубля: если <pre> блок уже есть — не генерируем
+    if "<pre>" in answer:
         return ""
     lines = answer.split("\n")
     data: dict = {}
