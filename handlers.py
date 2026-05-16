@@ -180,53 +180,39 @@ async def handle_document(message: Message):
 
 
 def _strip_deepseek_dup(answer: str) -> str:
-    """Вырезает дубли от DeepSeek: шапку с кодом и блок Платежи.
-    
-    Убирает:
-    📋 Код: 12345678
-    🔧 Название...
-    💰 Пошлина: X%
-    🧾 НДС: 22%
-    
-    И:
-    📊 Платежи:
-    Пошлина: ...
-    ...
-    """
+    """Вырезает дубли от DeepSeek: шапку с кодом и блок Платежи."""
     lines = answer.split("\n")
-    # Ищем где начинается состав ТС (настоящий ответ)
-    tc_start = -1
+    
+    # === ШАГ 1: найти и вырезать блок "ПЛАТЕЖИ:" или "📊 Платежи:" ===
     pay_start = -1
     for i, line in enumerate(lines):
-        ls = line.strip()
-        if ls.startswith("📊 Таможенная стоимость:") or ls.startswith("📊 Таможенная стоим"):
-            tc_start = i
-        if ls.startswith("📊 Платежи:") or ls.startswith("📊 **Платежи**"):
+        ls = line.strip().lower()
+        # Ловим любой вариант: "платежи:", "📊 платежи:", "**платежи**"
+        if ls in ("платежи:", "платежи") or ls.startswith("📊 платежи:") or ls.startswith("📊 **платежи**") or "**платежи**" in ls:
             pay_start = i
-        # Простой текстовый блок ПЛАТЕЖИ от DeepSeek
-        if ls == "платежи:" or ls.startswith("платежи:\n") or (ls == "платежи" and i + 1 < len(lines) and lines[i+1].strip().lower().startswith("пошлин")):
-            pay_start = i
-    
-    # Если нашли "📊 Платежи:" от DeepSeek — вырезаем всё оттуда и до конца
-    # (наша таблица заменит)
+            break
     if pay_start >= 0:
         lines = lines[:pay_start]
     
-    # Если нашли состав ТС и перед ним шапка с кодом — вырезаем шапку
+    # === ШАГ 2: найти и вырезать шапку с кодом (перед 📊 ТС) ===
+    tc_start = -1
+    for i, line in enumerate(lines):
+        if line.strip().startswith("📊 Таможенная стоимость:") or line.strip().startswith("📊 Таможенная стоим"):
+            tc_start = i
+            break
     if tc_start > 0:
         header_end = tc_start
-        # Проверяем что выше шапка (📋 Код / 🔧 / 💰 / 🧾)
-        has_code_header = False
+        has_header = False
         for j in range(tc_start - 1, -1, -1):
             ls = lines[j].strip()
-            if ls.startswith("📋 Код:") or ls.startswith("📋 **Код:**") or ls.startswith("🔧") or ls.startswith("💰") or ls.startswith("🧾") or ls.startswith("⚡"):
-                has_code_header = True
+            if any(ls.startswith(k) for k in ("📋 Код:", "📋 **Код:**", "🔧", "💰", "🧾", "⚡")):
+                has_header = True
                 header_end = j
             elif ls == "":
                 continue
             else:
                 break
-        if has_code_header:
+        if has_header:
             lines = lines[:header_end] + lines[tc_start:]
     
     return "\n".join(lines).strip()
@@ -236,6 +222,10 @@ def _format_payments_box(answer: str, currency: str, rates: dict = None, tariff_
     """Только Пошлина/НДС/Сбор/ИТОГО в рамке. Без ТС. Если rates — добавляет рублевый эквивалент.
     Если tariff_info — добавляет ставки в подписи (Пошлина 0%, НДС 22% и т.д.)."""
     import re
+    # Защита от дубля: если таблица уже есть в answer — не генерируем
+    # Проверяем по уникальным маркерам: <pre> блок + рублевая сноска
+    if "по курсу ЦБ РФ" in answer and ("───" in answer or "<pre>" in answer):
+        return ""
     lines = answer.split("\n")
     data: dict = {}
     cur_pat = {"USD": r"USD|\\$", "EUR": r"EUR|€", "CNY": r"CNY|CNH|¥", "RUB": r"RUB|₽"}
