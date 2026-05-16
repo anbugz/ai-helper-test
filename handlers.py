@@ -179,46 +179,59 @@ async def handle_document(message: Message):
         await message.answer(f"Ошибка: {e}")
 
 
-def _strip_header_dup(answer: str) -> str:
-    """Вырезает дубль шапки с кодом, если DeepSeek проигнорировал инструкцию.
+def _strip_deepseek_dup(answer: str) -> str:
+    """Вырезает дубли от DeepSeek: шапку с кодом и блок Платежи.
     
-    Убирает блоки типа:
+    Убирает:
     📋 Код: 12345678
     🔧 Название...
     💰 Пошлина: X%
     🧾 НДС: 22%
+    
+    И:
+    📊 Платежи:
+    Пошлина: ...
+    ...
     """
     lines = answer.split("\n")
-    # Ищем где начинается НАСТОЯЩИЙ ответ (📊 Таможенная стоимость / Пошлина / etc)
-    real_start = 0
+    # Ищем где начинается состав ТС (настоящий ответ)
+    tc_start = -1
+    pay_start = -1
     for i, line in enumerate(lines):
-        ls = line.strip().lower()
-        if ls.startswith("📊 тамож") or ls.startswith("пошлин") or ls.startswith("ндс") or ls.startswith("📊 платеж"):
-            real_start = i
-            break
-    # Если нашли реальный старт и перед ним есть шапка с кодом — вырезаем
-    if real_start > 0:
-        # Проверяем, что перед real_start идёт шапка (📋 Код / 🔧 / 💰 / 🧾)
-        header_lines = 0
-        for j in range(real_start - 1, -1, -1):
-            ls = lines[j].strip().lower()
-            if any(ls.startswith(k) for k in ("📋 код", "🔧", "💰 пошлин", "🧾 ндс", "⚡ радио")):
-                header_lines += 1
+        ls = line.strip()
+        if ls.startswith("📊 Таможенная стоимость:") or ls.startswith("📊 Таможенная стоим"):
+            tc_start = i
+        if ls.startswith("📊 Платежи:") or ls.startswith("📊 **Платежи**"):
+            pay_start = i
+    
+    # Если нашли "📊 Платежи:" от DeepSeek — вырезаем всё оттуда и до конца
+    # (наша таблица заменит)
+    if pay_start >= 0:
+        lines = lines[:pay_start]
+    
+    # Если нашли состав ТС и перед ним шапка с кодом — вырезаем шапку
+    if tc_start > 0:
+        header_end = tc_start
+        # Проверяем что выше шапка (📋 Код / 🔧 / 💰 / 🧾)
+        has_code_header = False
+        for j in range(tc_start - 1, -1, -1):
+            ls = lines[j].strip()
+            if ls.startswith("📋 Код:") or ls.startswith("📋 **Код:**") or ls.startswith("🔧") or ls.startswith("💰") or ls.startswith("🧾") or ls.startswith("⚡"):
+                has_code_header = True
+                header_end = j
             elif ls == "":
                 continue
             else:
                 break
-        if header_lines >= 2:  # Нашли шапку дубль
-            return "\n".join(lines[real_start:]).strip()
-    return answer
+        if has_code_header:
+            lines = lines[:header_end] + lines[tc_start:]
+    
+    return "\n".join(lines).strip()
 
 
 def _format_payments_box(answer: str, currency: str, rates: dict = None) -> str:
     """Только Пошлина/НДС/Сбор/ИТОГО в рамке. Без ТС. Если rates — добавляет рублевый эквивалент."""
     import re
-    # Защита от дубля: если таблица уже есть в answer — не генерируем
-    if "Платежи" in answer and ("┌─" in answer or "───" in answer):
-        return ""
     lines = answer.split("\n")
     data: dict = {}
     cur_pat = {"USD": r"USD|\\$", "EUR": r"EUR|€", "CNY": r"CNY|CNH|¥", "RUB": r"RUB|₽"}
@@ -390,8 +403,8 @@ async def handle_text(message: Message):
     msgs = build_messages(user_id, user_text, extra_context=extra)
     answer = await ask_deepseek(msgs)
 
-    # === ВЫРЕЗАЕМ дубль шапки от DeepSeek ===
-    answer = _strip_header_dup(answer)
+    # === ВЫРЕЗАЕМ дубли от DeepSeek (шапка + блок Платежи) ===
+    answer = _strip_deepseek_dup(answer)
 
     # === ШАПКА (одна, сверху) ===
     header = ""
@@ -415,11 +428,9 @@ async def handle_text(message: Message):
 
     # === ТАБЛИЦА ПЛАТЕЖЕЙ (одна, без ТС) ===
     if is_calc and base_cur != "RUB":
-        # Защита от дубля: если таблица уже есть — не добавляем
-        if "┌─" not in answer and "Платежи" not in answer and "Пошлина" not in answer[-200:]:
-            box = _format_payments_box(answer, base_cur, rates)
-            if box:
-                answer += box
+        box = _format_payments_box(answer, base_cur, rates)
+        if box:
+            answer += box
 
     # Курс ЦБ уже в таблице — отдельная сноска не нужна
     if rates and base_cur != "RUB":
