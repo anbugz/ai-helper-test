@@ -370,7 +370,7 @@ async def handle_text(message: Message):
                     # Быстрый ответ: код + ставка + тип + НДС + радио
                     quick = (
                         f"📋 <code>{info['code']}</code>\n"
-                        f"🔧 {info['name'][:60]}\n"
+                        f"🔧 {info['name']}\n"
                         f"💰 {info['tariff']}"
                     )
                     # Тип пошлины
