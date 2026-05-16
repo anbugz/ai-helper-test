@@ -237,19 +237,29 @@ def save_tnved_batch(rows: List[List[str]], parsed_rows: List[dict]) -> int:
 
 
 def get_tnved_from_db(code: str) -> Optional[dict]:
-    """Ищет код ТН ВЭД в SQLite."""
+    """Ищет код ТН ВЭД в SQLite. Сначала точный, потом 6-значный префикс."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     search = code.replace(" ", "").replace(".", "").strip()
+    # 1. Точное совпадение
     c.execute(
         "SELECT code, name, tariff, parsed_type, parsed_formula FROM tnved_cache WHERE code = ?",
         (search,),
     )
     row = c.fetchone()
+    # 2. LIKE полного кода
     if not row and len(search) >= 6:
         c.execute(
             "SELECT code, name, tariff, parsed_type, parsed_formula FROM tnved_cache WHERE code LIKE ? LIMIT 1",
             (f"{search}%",),
+        )
+        row = c.fetchone()
+    # 3. 6-значный префикс (группа ТН ВЭД)
+    if not row and len(search) >= 6:
+        prefix = search[:6]
+        c.execute(
+            "SELECT code, name, tariff, parsed_type, parsed_formula FROM tnved_cache WHERE code LIKE ? LIMIT 1",
+            (f"{prefix}%",),
         )
         row = c.fetchone()
     conn.close()
