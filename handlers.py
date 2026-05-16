@@ -347,8 +347,14 @@ async def handle_text(message: Message):
     codes = extract_tnved_codes(user_text)
     radio_detected = any(is_radio_electronics(c) for c in codes)
 
-    # --- ПРОВЕРКА КОДОВ ТН ВЭД В SQLITE (bothost: кэш в памяти не надёжен между процессами) ---
+    # --- ПРОВЕРКА КОДОВ ТН ВЭД В SQLITE ---
     from database import get_tnved_from_db as _get_tnved_db
+
+    # Быстрый ответ: если запрос ТОЛЬКО код(ы) ТН ВЭД без просьбы о расчёте
+    is_calculation_request = any(w in user_text.lower() for w in (
+        "инвойс", "сумма", "стоимость", "расчёт", "платеж", "пошлина",
+        "ндс", "сбор", "таможенная", "тс", "фрахт", "страховк",
+    )) or bool(re.search(r"\d{5,}(?!\d)", user_text)) and bool(re.search(r"\d{3,}", user_text))
 
     tnved_context = ""
     missing_codes = []
@@ -359,7 +365,33 @@ async def handle_text(message: Message):
             if info:
                 found_codes.append(info)
                 pt = info["parsed_tariff"]
-                # Вариант 2 — визуальная подача с эмодзи
+                # Быстрый короткий ответ (только код, без расчётов)
+                if not is_calculation_request:
+                    # Быстрый ответ: код + ставка + тип + НДС + радио
+                    quick = (
+                        f"📋 <code>{info['code']}</code>\n"
+                        f"🔧 {info['name'][:60]}\n"
+                        f"💰 {info['tariff']}"
+                    )
+                    # Тип пошлины
+                    if pt.get("type") in ("min", "plus", "fixed_eur"):
+                        quick += f"\n📊 Комбинированная ({pt['formula']})"
+                    elif pt.get("type") == "fixed_usd":
+                        quick += f"\n📊 Фикс. USD ({pt['formula']})"
+                    elif pt.get("type") == "percent":
+                        quick += "\n📊 Адвалорная"
+                    # НДС
+                    quick += "\n🧾 НДС: 22% (базовая)"
+                    if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")):
+                        quick += " / 10% (льготная)"
+                    else:
+                        quick += ", проверьте льготную 10%"
+                    # Радиоэлектроника
+                    if is_radio_electronics(info['code']):
+                        quick += "\n⚡ Радиоэлектроника: сбор 73 860 ₽"
+                    await message.answer(quick)
+                    return
+                # Вариант 2 — визуальная подача с эмодзи (для расчётов)
                 tnved_context += (
                     f"\n📋 <b>Код ТН ВЭД:</b> <code>{info['code']}</code>\n"
                     f"🔧 <b>Наименование:</b> {info['name'][:80]}\n"
@@ -374,27 +406,21 @@ async def handle_text(message: Message):
                         "📏 <b>Нужен вес товара</b> для евро-компоненты\n"
                     )
                 else:
-                    tnved_context += "✅ <b>Вес не требуется</b> — простая адвалорная ставка\n"
+                    tnved_context += "✅ <b>Вес не требуется</b>\n"
             else:
                 missing_codes.append(code)
 
     if codes and not found_codes:
         await safe_send(
             message,
-            f"❌ <b>Код не найден в справочнике</b>\n\n"
-            f"📋 Проверьте код: <code>{', '.join(missing_codes)}</code>\n\n"
-            f"Возможные причины:\n"
-            f"• Опечатка в коде\n"
-            f"• Код изменился (обновлён справочник)\n"
-            f"• Нужно загрузить актуальный TWS_TNVED_*.xlsx\n\n"
-            f"📞 Уточните правильный код у декларанта."
+            f"❌ <b>Код не найден</b>\n"
+            f"📋 <code>{', '.join(missing_codes)}</code>"
         )
         return
 
     if missing_codes:
         tnved_context += (
             f"\n⚠️ <b>Коды не найдены:</b> {', '.join(missing_codes)}\n"
-            f"📊 Расчёт произведён только для найденных кодов\n"
         )
 
     # Определяем валюту и страхование
