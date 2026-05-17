@@ -188,7 +188,7 @@ def _strip_deepseek_dup(answer: str) -> str:
     for i, line in enumerate(lines):
         ls = line.strip().lower()
         # Ловим любой вариант: "платежи:", "📊 платежи:", "**платежи**"
-        if ls in ("платежи:", "платежи") or ls.startswith("📊 платежи:") or ls.startswith("📊 **платежи**") or "**платежи**" in ls:
+        if ls in ("платежи:", "платежи") or ls.startswith("📊 платежи:") or ls.startswith("📊 **платежи**") or "**платежи**" in ls or "платежи в валюте" in ls:
             pay_start = i
             break
     if pay_start >= 0:
@@ -427,7 +427,7 @@ async def handle_text(message: Message):
         info = found_codes[0]
         pt = info["parsed_tariff"]
         header = f"📋 <b>Код:</b> <code>{info['code']}</code>\n"
-        header += f"🔧 {info['name'][:70]}\n"
+        header += f"🔧 {info['name'][:150]}\n"
         header += f"💰 <b>Пошлина:</b> {info['tariff']}"
         if pt.get("type") in ("min", "plus", "fixed_eur"):
             header += f" — комбинированная ({pt['formula']})"
