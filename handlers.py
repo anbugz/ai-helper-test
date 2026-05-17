@@ -230,7 +230,7 @@ async def handle_document(message: Message):
             )
             return
 
-        lines = ["<b>Excel:</b>"]
+        lines = ["<<b>Excel:</b>"]
         for i, row in enumerate(
             [r for r in data if r and any(str(c).strip() for c in r)][:15], 1
         ):
@@ -438,47 +438,15 @@ async def handle_text(message: Message):
 
     msgs = build_messages(user_id, user_text, extra_context=extra)
     answer = await ask_deepseek(msgs)
-
     answer = _strip_deepseek_dup(answer)
 
-    # --- ШАПКА (одна, сверху) ------------------------------------
-    header = ""
-    if found_codes:
-        info = found_codes[0]
-        pt = info["parsed_tariff"]
-        header = f"📋 <b>Код:</b> <code>{info['code']}</code>\n"
-        name_clean = re.sub(r"\s*\(за исключением[^)]+", "", info["name"]).strip()
-        full_name = TNVED_FULL_NAMES.get(info["code"][:6], name_clean)
-        header += f"🔧 {full_name}\n"
-        header += f"💰 <b>Пошлина:</b> {info['tariff']}"
-        if pt.get("type") in ("min", "plus", "fixed_eur"):
-            header += f" — комбинированная ({pt['formula']})"
-        elif pt.get("type") == "percent":
-            header += " — адвалорная"
-        header += "\n"
-        vat_str = (
-            "10% (льготная)"
-            if vat_rate == 0.10
-            else "22% (базовая)"
+    # --- РАСЧЁТНЫЙ ЗАПРОС: чистый fallback, без дублей ------------
+    if is_calc and found_codes and ts_fallback and base_cur:
+        code_val = found_codes[0]["code"]
+        name_val = TNVED_FULL_NAMES.get(
+            found_codes[0]["code"][:6], found_codes[0]["name"]
         )
-        header += f"🧾 <b>НДС:</b> {vat_str}\n"
-        if radio_detected:
-            header += "⚡ <b>Радиоэлектроника:</b> сбор 73 860 ₽\n"
-        if missing:
-            header += f"⚠️ Не найдены: {', '.join(missing)}\n"
-
-    # --- Fallback расчёт (если DeepSeek не вывёл полный) ---------
-    has_deepseek_calc = any(
-        k in answer.lower()
-        for k in ("итого платежей", "итоговый расчёт", "итоговый расчет", "📊 итоговый")
-    )
-    if is_calc and base_cur and not has_deepseek_calc:
-        code_val = found_codes[0]["code"] if found_codes else None
-        name_val = (
-            TNVED_FULL_NAMES.get(found_codes[0]["code"][:6], found_codes[0]["name"])
-            if found_codes else None
-        )
-        fallback = _format_calculation_fallback(
+        answer = _format_calculation_fallback(
             code=code_val,
             name=name_val,
             currency=base_cur,
@@ -489,14 +457,62 @@ async def handle_text(message: Message):
             vat_rate=vat_rate,
             ts_fallback=ts_fallback,
         )
-        if fallback:
-            answer += "\n\n" + fallback
+    else:
+        # --- ШАПКА (только для не-расчётных или без суммы) ------
+        header = ""
+        if found_codes:
+            info = found_codes[0]
+            pt = info["parsed_tariff"]
+            header = f"📋 <b>Код:</b> <code>{info['code']}</code>\n"
+            name_clean = re.sub(r"\s*\(за исключением[^)]+\)", "", info["name"]).strip()
+            full_name = TNVED_FULL_NAMES.get(info["code"][:6], name_clean)
+            header += f"🔧 {full_name}\n"
+            header += f"💰 <b>Пошлина:</b> {info['tariff']}"
+            if pt.get("type") in ("min", "plus", "fixed_eur"):
+                header += f" — комбинированная ({pt['formula']})"
+            elif pt.get("type") == "percent":
+                header += " — адвалорная"
+            header += "\n"
+            vat_str = "10% (льготная)" if vat_rate == 0.10 else "22% (базовая)"
+            header += f"🧾 <b>НДС:</b> {vat_str}\n"
+            if radio_detected:
+                header += "⚡ <b>Радиоэлектроника:</b> сбор 73 860 ₽\n"
+            if missing:
+                header += f"⚠️ Не найдены: {', '.join(missing)}\n"
 
-    # --- Декларант (если ещё не добавлен) ------------------------
+        # Fallback если DeepSeek не вывёл платежи
+        has_deepseek_calc = any(
+            k in answer.lower()
+            for k in ("итого платежей", "итоговый расчёт", "итоговый расчет", "📊 итоговый")
+        )
+        if is_calc and base_cur and not has_deepseek_calc:
+            code_val = found_codes[0]["code"] if found_codes else None
+            name_val = (
+                TNVED_FULL_NAMES.get(found_codes[0]["code"][:6], found_codes[0]["name"])
+                if found_codes else None
+            )
+            fallback = _format_calculation_fallback(
+                code=code_val,
+                name=name_val,
+                currency=base_cur,
+                rates=rates or {},
+                tariff_info=ti,
+                is_radio=radio_detected,
+                customs_fee_rub=customs_fee_rub,
+                vat_rate=vat_rate,
+                ts_fallback=ts_fallback,
+            )
+            if fallback:
+                answer += "\n\n" + fallback
+
+        if header:
+            answer = header + "\n" + answer
+
+    # --- Декларант -----------------------------------------------
     if found_codes and "декларант" not in answer.lower():
         answer += "\n\n📌 <i>Точную информацию уточняйте у декларанта.</i>"
 
-    # --- Курс ЦБ РФ (единый финальный блок) ----------------------
+    # --- Курс ЦБ РФ ----------------------------------------------
     try:
         rates = await get_cbr_rates()
         cny = rates.get("CNY", "н/д")
@@ -509,10 +525,6 @@ async def handle_text(message: Message):
         )
     except Exception:
         pass
-
-    # Склеиваем шапку
-    if header:
-        answer = header + "\n" + answer
 
     save_message(user_id, message.from_user.username or "", "assistant", answer)
     await safe_send(message, answer)
