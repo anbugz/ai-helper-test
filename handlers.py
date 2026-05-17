@@ -251,6 +251,30 @@ def _format_payments_box(answer: str, currency: str, rates: dict = None, tariff_
                     if val:
                         data[key] = val
                 break
+    # Fallback: если DeepSeek не вывел платежи, но есть ТС и ставки — считаем сами
+    if ("пошлина" not in data and "ндс" not in data) and ts_val and tariff_info:
+        try:
+            ts_num = float(ts_val.replace(" ", "").replace(",", "."))
+            pt = tariff_info.get("parsed_tariff", {})
+            rate = float(pt.get("rate", 0)) if pt.get("rate") else 0
+            # Пошлина
+            duty = round(ts_num * rate / 100, 2) if rate else 0
+            data["пошлина"] = f"{duty:,.2f}".replace(",", " ")
+            # НДС 22%
+            vat_base = ts_num + duty
+            vat = round(vat_base * 0.22, 2)
+            data["ндс"] = f"{vat:,.2f}".replace(",", " ")
+            # Сбор
+            if is_radio:
+                data["сбор"] = "—"
+            else:
+                data["сбор"] = "0"
+            # Итого
+            total = duty + vat
+            data["итого"] = f"{total:,.2f}".replace(",", " ")
+        except (ValueError, TypeError):
+            return ""
+
     if "пошлина" not in data and "ндс" not in data:
         return ""
     # Ставки для подписей
