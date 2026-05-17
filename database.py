@@ -70,12 +70,6 @@ def init_db() -> None:
     conn.close()
     logger.info("База данных инициализирована.")
 
-# --- Автомиграция ---
-try:
-    migrate_add_full_name()
-except Exception:
-    pass
-
 # ------------------------------------------------------------------
 # Миграции
 # ------------------------------------------------------------------
@@ -129,14 +123,23 @@ def get_name_with_fallback(code: str) -> dict:
     """Возвращает dict с name, full_name, source для кода.
     
     Priority: full_name (SQLite) > name (Excel) > code
+    Защита: если full_name колонки нет — используем name.
     """
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT name, full_name, full_name_source FROM tnved_cache WHERE code = ?", (code,))
-    row = c.fetchone()
+    try:
+        c.execute("SELECT name, full_name, full_name_source FROM tnved_cache WHERE code = ?", (code,))
+        row = c.fetchone()
+    except sqlite3.OperationalError:
+        # Колонки full_name ещё нет — используем name
+        c.execute("SELECT name FROM tnved_cache WHERE code = ?", (code,))
+        row = c.fetchone()
+        if row:
+            return {"name": row[0] if row[0] else code, "short_name": row[0] if row[0] else code, "full_name": None, "source": None}
+        return {"name": code, "short_name": code, "full_name": None, "source": None}
     conn.close()
     if not row:
-        return {"name": code, "full_name": None, "source": None}
+        return {"name": code, "short_name": code, "full_name": None, "source": None}
     name, full_name, source = row
     return {
         "name": full_name if full_name else (name if name else code),

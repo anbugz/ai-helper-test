@@ -13,7 +13,7 @@ import asyncio
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import logger, VERSION
-from database import init_db
+from database import init_db, migrate_add_full_name
 from bot_instance import dp, bot
 from tnved_engine import restore_tnved_from_db
 
@@ -25,6 +25,11 @@ async def main() -> None:
     logger.info(f"Bot starting. Version: {VERSION}")
     init_db()
     logger.info("Database initialized.")
+    try:
+        migrate_add_full_name()
+        logger.info("Migration completed.")
+    except Exception as e:
+        logger.warning(f"Migration skipped: {e}")
     restore_tnved_from_db()
     logger.info("TNVED cache restored from DB (if exists).")
     await dp.start_polling(bot)
