@@ -59,15 +59,12 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS tnved_cache (
             code TEXT PRIMARY KEY,
             name TEXT,
-            full_name TEXT,
-            full_name_source TEXT,
             tariff TEXT,
             parsed_type TEXT,
             parsed_formula TEXT,
             loaded_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_tnved_name ON tnved_cache(name);
-        CREATE INDEX IF NOT EXISTS idx_tnved_full ON tnved_cache(full_name);
     """)
     conn.commit()
     conn.close()
@@ -94,6 +91,12 @@ def migrate_add_full_name() -> None:
         c.execute("ALTER TABLE tnved_cache ADD COLUMN full_name_source TEXT")
         conn.commit()
         logger.info("Миграция: добавлены full_name и full_name_source")
+    # Индекс на full_name (создаём если нет)
+    try:
+        c.execute("CREATE INDEX IF NOT EXISTS idx_tnved_full ON tnved_cache(full_name)")
+        conn.commit()
+    except Exception:
+        pass
     conn.close()
 
 # ------------------------------------------------------------------
