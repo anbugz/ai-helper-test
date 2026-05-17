@@ -549,8 +549,8 @@ async def handle_text(message: Message):
         if header:
             answer = header + "\n" + answer
 
-    # --- Декларант -----------------------------------------------
-    if found_codes and "декларант" not in answer.lower():
+    # --- Декларант (только для НЕ-расчётных ответов) ------------
+    if found_codes and not is_calc and "декларант" not in answer.lower():
         answer += "\n\n📌 <i>Точную информацию уточняйте у декларанта.</i>"
 
     # --- Курс ЦБ РФ ----------------------------------------------

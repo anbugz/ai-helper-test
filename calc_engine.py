@@ -1,5 +1,5 @@
 """
-calc_engine.py — логика расчёта ТП и форматирования ответа.
+calc_engine.py — логика расчёта ТП и форматирование ответа.
 Вся математика здесь, не в handlers.py.
 """
 import re
@@ -70,8 +70,26 @@ def _format_calculation_fallback(
     ts_components: Optional[Dict] = None,
     weight_kg: Optional[float] = None,
 ) -> str:
-    """Компактный fallback-расчёт без пошаговой арифметики.
-    Формат: Исходные данные → Конвертация → Итоговый расчёт.
+    """Финальный формат расчёта ТП.
+
+    📋 Код: 8471300000
+    🔧 Портативные автоматические вычислительные машины весом не более 10 кг
+    💰 Пошлина: 0% — адвалорная
+    🧾 НДС: 22% (базовая)
+    ⚡ Радиоэлектроника: сбор 73 860 ₽ (код 8471 в Приложении №1)
+
+    🔄 Конвертация в валюту инвойса (CNY):
+    • Инвойс: 100 000 CNY — уже в валюте инвойса
+    • Фрахт: 900 USD → 65 814.75 ₽ → 6 132.48 CNY
+    • Страховка: 2 500 ₽ → 232.95 CNY
+
+    📊 Итоговый расчёт
+    💰 Таможенная стоимость: 106 365.43 CNY
+    📋 Пошлина 0%:                0.00 CNY
+    🧾 НДС 22%:              23 400.39 CNY
+    ⚡ Сбор:                  6 896.52 CNY  (73 860 ₽ → 6 896.52 CNY)
+    ───────────────────────────────────
+    💵 ИТОГО:                30 296.91 CNY  (~ 324 500.00 ₽)
     """
     if not ts_fallback or not tariff_info:
         return ""
@@ -92,6 +110,7 @@ def _format_calculation_fallback(
 
     total = duty + vat + fee_cur
 
+    # Курс ЦБ РФ для валюты инвойса (для справочной конвертации ₽ в конце)
     rate_cur = None
     if rates and currency in rates:
         try:
@@ -109,88 +128,125 @@ def _format_calculation_fallback(
 
     lines = []
 
-    # 📋 Исходные данные
-    lines.append("📋 <b>Исходные данные:</b>")
+    # ── 1. ШАПКА ──────────────────────────────────
     if code:
-        lines.append(f"• Код ТН ВЭД: <code>{code}</code> — {name or '—'}")
+        lines.append(f"📋 Код: {code}")
+    if name:
+        lines.append(f"🔧 {name}")
 
     tariff_str = tariff_info.get("tariff", "—")
-    duty_type = "адвалорная"
     if pt.get("type") in ("min", "plus", "fixed_eur"):
         duty_type = f"комбинированная ({pt.get('formula', '')})"
     elif pt.get("type") == "fixed_usd":
         duty_type = f"специфическая ({pt.get('formula', '')})"
-
-    lines.append(f"• Пошлина: <b>{tariff_str}</b> ({duty_type})")
-    lines.append(f"• НДС: <b>{int(vat_rate * 100)}%</b> ({'льготная' if vat_rate == 0.10 else 'базовая'})")
-    # Сбор через универсальную функцию конвертации
-    fee_cur, fee_display = convert_fee_to_currency(fee_rub, currency, rates)
-    fee_type_label = " (радиоэлектроника)" if is_radio else (" (по шкале ПП РФ №1637)" if fee_rub > 0 else "")
-    lines.append(f"• Сбор: <b>{fee_display}</b>{fee_type_label}")
-
-    # Компоненты ТС с валютами
-    if ts_components:
-        for key, label in (("invoice", "Инвойс"), ("freight", "Фрахт"), ("insurance", "Страховка")):
-            if key in ts_components:
-                comp = ts_components[key]
-                val = comp["value"]
-                cur = comp["currency"]
-                if cur == currency:
-                    lines.append(f"• {label}: <code>{fmt(val)} {cur}</code>")
-                else:
-                    lines.append(f"• {label}: <code>{fmt(val)} {cur}</code> → <code>{fmt(comp['converted'])} {currency}</code>")
-        lines.append(f"• <b>ТС:</b> <code>{fmt(ts_num)} {currency}</code>")
+    elif pt.get("type") == "percent":
+        duty_type = "адвалорная"
     else:
-        lines.append(f"• Стоимость: <code>{fmt(ts_num)} {currency}</code>")
-    if weight_kg:
-        lines.append(f"• Вес: <code>{weight_kg} кг</code>")
-    else:
-        lines.append("• Вес: не указан")
+        duty_type = tariff_str
+
+    lines.append(f"💰 Пошлина: {tariff_str} — {duty_type}")
+
+    vat_label = "10% (льготная)" if vat_rate == 0.10 else "22% (базовая)"
+    lines.append(f"🧾 НДС: {vat_label}")
+
+    if is_radio:
+        lines.append(f"⚡ Радиоэлектроника: сбор 73 860 ₽ (код {code[:4] if code else ''} в Приложении №1)")
+    elif fee_rub > 0:
+        lines.append(f"⚡ Сбор: {fee_rub:,.0f} ₽ (по шкале ПП РФ №1637)")
+
     lines.append("")
 
-    # 🔄 Конвертация
+    # ── 2. КОНВЕРТАЦИЯ ────────────────────────────
     conv_lines = []
     if ts_components:
-        for key, label in (("freight", "Фрахт"), ("insurance", "Страховка")):
-            if key in ts_components:
-                comp = ts_components[key]
-                if comp["currency"] != currency and comp.get("rate"):
-                    conv_lines.append(f"• {label}: {comp['rate']}")
-    # Евро-компонента пошлины
-    if pt.get("type") in ("min", "plus", "fixed_eur") and rates and "EUR" in rates:
-        eur_r = rates.get("EUR", "—")
-        cny_r = rates.get("CNY", "—")
-        usd_r = rates.get("USD", "—")
-        conv_lines.append(f"• Курс EUR: 1 EUR = {eur_r} ₽ (для конвертации EUR/кг)")
-        if currency == "CNY" and eur_r not in ("—", "", None) and cny_r not in ("—", "", None):
-            try:
-                cross = round(float(eur_r) / float(cny_r), 4)
-                conv_lines.append(f"• Кросс EUR→CNY: 1 EUR = {cross} CNY")
-            except (ValueError, TypeError):
-                pass
-        elif currency == "USD" and eur_r not in ("—", "", None) and usd_r not in ("—", "", None):
-            try:
-                cross = round(float(eur_r) / float(usd_r), 4)
-                conv_lines.append(f"• Кросс EUR→USD: 1 EUR = {cross} USD")
-            except (ValueError, TypeError):
-                pass
-        elif currency == "EUR":
-            conv_lines.append(f"• Курс EUR: 1 EUR = {eur_r} ₽ (пошлина в EUR — конвертация не требуется)")
+        # Инвойс
+        if "invoice" in ts_components:
+            inv = ts_components["invoice"]
+            if inv["currency"] == currency:
+                conv_lines.append(f"• Инвойс: {fmt(inv['value'])} {currency} — уже в валюте инвойса")
+            else:
+                # Конвертируем через ₽
+                inv_rub = inv["value"] * float(rates.get(inv["currency"], 0))
+                inv_cur = round(inv_rub / float(rates.get(currency, 1)), 2)
+                conv_lines.append(
+                    f"• Инвойс: {fmt(inv['value'])} {inv['currency']} → "
+                    f"{fmt(round(inv_rub, 2))} ₽ → {fmt(inv_cur)} {currency}"
+                )
+
+        # Фрахт
+        if "freight" in ts_components:
+            fr = ts_components["freight"]
+            if fr["currency"] == currency:
+                conv_lines.append(f"• Фрахт: {fmt(fr['value'])} {currency}")
+            else:
+                if fr["currency"] == "RUB":
+                    fr_cur = round(fr["value"] / float(rates.get(currency, 1)), 2)
+                    conv_lines.append(
+                        f"• Фрахт: {fmt(fr['value'])} ₽ → {fmt(fr_cur)} {currency}"
+                    )
+                elif fr.get("rate"):
+                    conv_lines.append(f"• Фрахт: {fr['rate']}")
+                else:
+                    fr_rub = fr["value"] * float(rates.get(fr["currency"], 0))
+                    fr_cur = round(fr_rub / float(rates.get(currency, 1)), 2)
+                    conv_lines.append(
+                        f"• Фрахт: {fmt(fr['value'])} {fr['currency']} → "
+                        f"{fmt(round(fr_rub, 2))} ₽ → {fmt(fr_cur)} {currency}"
+                    )
+
+        # Страховка
+        if "insurance" in ts_components:
+            ins = ts_components["insurance"]
+            if ins["currency"] == currency:
+                conv_lines.append(f"• Страховка: {fmt(ins['value'])} {currency}")
+            else:
+                if ins["currency"] == "RUB":
+                    ins_cur = round(ins["value"] / float(rates.get(currency, 1)), 2)
+                    conv_lines.append(
+                        f"• Страховка: {fmt(ins['value'])} ₽ → {fmt(ins_cur)} {currency}"
+                    )
+                elif ins.get("rate"):
+                    conv_lines.append(f"• Страховка: {ins['rate']}")
+                else:
+                    ins_rub = ins["value"] * float(rates.get(ins["currency"], 0))
+                    ins_cur = round(ins_rub / float(rates.get(currency, 1)), 2)
+                    conv_lines.append(
+                        f"• Страховка: {fmt(ins['value'])} {ins['currency']} → "
+                        f"{fmt(round(ins_rub, 2))} ₽ → {fmt(ins_cur)} {currency}"
+                    )
 
     if conv_lines:
-        lines.append(f"🔄 <b>Конвертация в валюту инвойса ({currency}):</b>")
+        lines.append(f"🔄 Конвертация в валюту инвойса ({currency}):")
         lines.extend(conv_lines)
         lines.append("")
 
-    # 📊 Итоговый расчёт
-    lines.append("📊 <b>Итоговый расчёт</b>")
-    lines.append(f"Таможенная стоимость:  {fmt(ts_num):>12} {currency}   (~ {to_rub(ts_num)})")
-    lines.append(f"Пошлина {rate}%:        {fmt(duty):>12} {currency}   (~ {to_rub(duty)})")
-    lines.append(f"НДС {int(vat_rate * 100)}%:              {fmt(vat):>12} {currency}   (~ {to_rub(vat)})")
+    # ── 3. ИТОГОВЫЙ РАСЧЁТ ────────────────────────
+    lines.append("📊 Итоговый расчёт")
+
+    # Таможенная стоимость
+    lines.append(f"💰 Таможенная стоимость: {fmt(ts_num)} {currency}")
+
+    # Пошлина
+    lines.append(f"📋 Пошлина {rate:g}%:{' ' * max(1, 24 - len(f'📋 Пошлина {rate:g}%:'))}{fmt(duty)} {currency}")
+
+    # НДС
+    nds_label = f"🧾 НДС {int(vat_rate * 100)}%:"
+    lines.append(f"{nds_label}{' ' * max(1, 30 - len(nds_label))}{fmt(vat)} {currency}")
+
+    # Сбор
     if fee_cur > 0:
-        fee_label = f"Сбор (радио, {currency}):" if is_radio else f"Сбор ({currency}):"
-        lines.append(f"{fee_label:<22} {fmt(fee_cur):>12} {currency}   (~ {to_rub(fee_cur)})")
-    lines.append("────────────────────────────────────────────────")
-    lines.append(f"<b>ИТОГО платежей:</b>     {fmt(total):>12} {currency}   (~ {to_rub(total)})")
+        fee_label = "⚡ Сбор:"
+        fee_conv_info = f" ({fee_rub:,.0f} ₽ → {fmt(fee_cur)} {currency})"
+        padding = max(1, 30 - len(fee_label) - len(fee_conv_info) + len(f" ({fee_rub:,.0f} ₽ → {fmt(fee_cur)} {currency})"))
+        lines.append(f"{fee_label}{' ' * max(1, 30 - len(fee_label))}{fmt(fee_cur)} {currency}{fee_conv_info}")
+
+    lines.append("───────────────────────────────────")
+
+    # ИТОГО
+    total_rub = to_rub(total)
+    itogo_label = "💵 ИТОГО:"
+    itogo_value = f"{fmt(total)} {currency}"
+    itogo_rub = f"  (~ {total_rub})" if total_rub else ""
+    lines.append(f"{itogo_label}{' ' * max(1, 24 - len(itogo_label))}{itogo_value}{itogo_rub}")
 
     return "\n".join(lines)
