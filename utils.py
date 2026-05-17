@@ -197,23 +197,38 @@ def extract_ts_components_with_currency(text: str) -> Dict[str, Dict[str, any]]:
     if ins:
         res["insurance"] = ins
 
-    # Fallback invoice — первое число ≥ 1000, если не найдено по ключевым словам
+    # Fallback invoice — первое число ≥ 1000
+    # Если число идёт сразу после кода ТН ВЭД (позиция 0-2) — это инвойс
+    # Не пропускаем если фрахт/страховка идёт через другое слово (например, "100000юаней фрахт")
     if "invoice" not in res:
-        # Ищем число, после которого НЕТ ключевых слов фрахт/страховка
         for m in re.finditer(r"(\d[\d\s,.]{2,})", text_clean):
             val = _parse_num(m.group(1))
             if val < 1000:
                 continue
             num_len = len(re.match(r"[\d\s,.]+", m.group(1)).group())
             pos_after = m.start(1) + num_len
-            after = text_clean[pos_after:pos_after + 15]
-            # Пропускаем если это фрахт или страховка
-            if any(kw in after for kw in ("фрахт", "доставк", "перевозк", "страховк", "страхан")):
-                continue
+
             # Пропускаем если перед числом ключевое слово фрахта/страховки
             before = text_clean[max(0, m.start() - 20):m.start()]
             if any(kw in before for kw in ("фрахт", "доставк", "перевозк", "страховк", "страхан")):
                 continue
+
+            # Проверяем что после числа (первые 2 токена)
+            after = text_clean[pos_after:pos_after + 20]
+            after_tokens = after.split()[:2]
+            after_str = " ".join(after_tokens)
+
+            # Число в начале строки (после кода ТН ВЭД) = инвойс
+            is_at_start = m.start() <= 2
+
+            # Если валютный маркер сразу после числа, а потом фрахт — это инвойс
+            has_currency_marker = any(x in after_str for x in ("ю", "дол", "евр", "руб", "р.", "$", "€", "¥"))
+
+            # Пропускаем только если фрахт/страховка идёт СРАЗУ после числа (без валютного маркера)
+            if any(kw in after_str for kw in ("фрахт", "доставк", "перевозк", "страховк", "страхан")):
+                if not is_at_start and not has_currency_marker:
+                    continue
+
             cur = _detect_currency_near(text_clean, pos_after)
             res["invoice"] = {"value": val, "currency": cur}
             break

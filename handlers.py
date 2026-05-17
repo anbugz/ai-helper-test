@@ -319,6 +319,8 @@ async def handle_text(message: Message):
         for c in codes[:3]:
             info = get_tnved_from_cache(c)
             if info:
+                # Очищаем наименование от некорректных символов
+                info["name"] = info.get("name", "").replace("🠺", "→").replace("🠔", "←").strip()
                 found_codes.append(info)
             else:
                 missing.append(c)
