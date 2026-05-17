@@ -66,6 +66,7 @@ def _format_calculation_fallback(
     customs_fee_rub: float = 0,
     vat_rate: float = 0.22,
     ts_fallback: Optional[float] = None,
+    ts_components: Optional[Dict] = None,
     weight_kg: Optional[float] = None,
 ) -> str:
     """Компактный fallback-расчёт без пошаговой арифметики.
@@ -136,7 +137,21 @@ def _format_calculation_fallback(
             lines.append(f"• Сбор: <b>{fee_rub:,.0f} ₽</b> (по шкале ПП РФ №1637)")
         else:
             lines.append("• Сбор: <b>0 ₽</b>")
-    lines.append(f"• Стоимость: <code>{fmt(ts_num)} {currency}</code>")
+
+    # Компоненты ТС с валютами
+    if ts_components:
+        for key, label in (("invoice", "Инвойс"), ("freight", "Фрахт"), ("insurance", "Страховка")):
+            if key in ts_components:
+                comp = ts_components[key]
+                val = comp["value"]
+                cur = comp["currency"]
+                if cur == currency:
+                    lines.append(f"• {label}: <code>{fmt(val)} {cur}</code>")
+                else:
+                    lines.append(f"• {label}: <code>{fmt(val)} {cur}</code> → <code>{fmt(comp['converted'])} {currency}</code>")
+        lines.append(f"• <b>ТС:</b> <code>{fmt(ts_num)} {currency}</code>")
+    else:
+        lines.append(f"• Стоимость: <code>{fmt(ts_num)} {currency}</code>")
     if weight_kg:
         lines.append(f"• Вес: <code>{weight_kg} кг</code>")
     else:
@@ -144,25 +159,35 @@ def _format_calculation_fallback(
     lines.append("")
 
     # 🔄 Конвертация
-    if rates:
-        usd_r = rates.get("USD", "—")
+    conv_lines = []
+    if ts_components:
+        for key, label in (("freight", "Фрахт"), ("insurance", "Страховка")):
+            if key in ts_components:
+                comp = ts_components[key]
+                if comp["currency"] != currency and comp.get("rate"):
+                    conv_lines.append(f"• {label}: {comp['rate']}")
+    # Евро-компонента пошлины
+    if pt.get("type") in ("min", "plus", "fixed_eur") and rates and "EUR" in rates:
         eur_r = rates.get("EUR", "—")
         cny_r = rates.get("CNY", "—")
+        usd_r = rates.get("USD", "—")
+        conv_lines.append(f"• Курс EUR: 1 EUR = {eur_r} ₽ (для конвертации EUR/кг)")
+        if currency == "CNY" and eur_r not in ("—", "", None) and cny_r not in ("—", "", None):
+            try:
+                cross = round(float(eur_r) / float(cny_r), 4)
+                conv_lines.append(f"• Кросс EUR→CNY: 1 EUR = {cross} CNY")
+            except (ValueError, TypeError):
+                pass
+        elif currency == "USD" and eur_r not in ("—", "", None) and usd_r not in ("—", "", None):
+            try:
+                cross = round(float(eur_r) / float(usd_r), 4)
+                conv_lines.append(f"• Кросс EUR→USD: 1 EUR = {cross} USD")
+            except (ValueError, TypeError):
+                pass
+
+    if conv_lines:
         lines.append(f"🔄 <b>Конвертация в валюту инвойса ({currency}):</b>")
-        lines.append(f"• Курс ЦБ РФ: 1 USD = {usd_r} ₽, 1 CNY = {cny_r} ₽, 1 EUR = {eur_r} ₽")
-        lines.append(f"• Фрахт/страховка в USD/EUR/CNY → ₽ ЦБ РФ → {currency}")
-        if currency == "CNY" and usd_r not in ("—", "", None) and cny_r not in ("—", "", None):
-            try:
-                cross = round(float(usd_r) / float(cny_r), 4)
-                lines.append(f"• Кросс USD→CNY: 1 USD = {cross} CNY")
-            except (ValueError, TypeError):
-                pass
-        elif currency == "USD" and usd_r not in ("—", "", None) and cny_r not in ("—", "", None):
-            try:
-                cross = round(float(cny_r) / float(usd_r), 4)
-                lines.append(f"• Кросс CNY→USD: 1 CNY = {cross} USD")
-            except (ValueError, TypeError):
-                pass
+        lines.extend(conv_lines)
         lines.append("")
 
     # 📊 Итоговый расчёт
