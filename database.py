@@ -59,16 +59,88 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS tnved_cache (
             code TEXT PRIMARY KEY,
             name TEXT,
+            full_name TEXT,
+            full_name_source TEXT,
             tariff TEXT,
             parsed_type TEXT,
             parsed_formula TEXT,
             loaded_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_tnved_name ON tnved_cache(name);
+        CREATE INDEX IF NOT EXISTS idx_tnved_full ON tnved_cache(full_name);
     """)
     conn.commit()
     conn.close()
     logger.info("База данных инициализирована.")
+
+# --- Автомиграция ---
+try:
+    migrate_add_full_name()
+except Exception:
+    pass
+
+# ------------------------------------------------------------------
+# Миграции
+# ------------------------------------------------------------------
+
+def migrate_add_full_name() -> None:
+    """Добавляет колонки full_name и full_name_source если их нет (для старых баз)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT full_name FROM tnved_cache LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE tnved_cache ADD COLUMN full_name TEXT")
+        c.execute("ALTER TABLE tnved_cache ADD COLUMN full_name_source TEXT")
+        conn.commit()
+        logger.info("Миграция: добавлены full_name и full_name_source")
+    conn.close()
+
+# ------------------------------------------------------------------
+# Полные наименования (full_name)
+# ------------------------------------------------------------------
+
+def get_full_name(code: str) -> Optional[str]:
+    """Возвращает full_name из кэша SQLite если есть."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT full_name FROM tnved_cache WHERE code = ? AND full_name IS NOT NULL", (code,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def save_full_name(code: str, full_name: str, source: str) -> None:
+    """Сохраняет полное наименование в SQLite."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "UPDATE tnved_cache SET full_name = ?, full_name_source = ? WHERE code = ?",
+        (full_name, source, code)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_name_with_fallback(code: str) -> dict:
+    """Возвращает dict с name, full_name, source для кода.
+    
+    Priority: full_name (SQLite) > name (Excel) > code
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT name, full_name, full_name_source FROM tnved_cache WHERE code = ?", (code,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return {"name": code, "full_name": None, "source": None}
+    name, full_name, source = row
+    return {
+        "name": full_name if full_name else (name if name else code),
+        "short_name": name if name else code,
+        "full_name": full_name,
+        "source": source,
+    }
 
 # ------------------------------------------------------------------
 # Диалоги

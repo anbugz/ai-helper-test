@@ -22,6 +22,16 @@ from utils import (
     check_rate_limit, now_msk, detect_base_currency, get_cbr_rates,
     format_cross_rates, build_messages, ask_deepseek, safe_send, parse_date_range,
 )
+from tnved_fetcher import fetch_full_name, _set_db_path
+import os
+# Инициализируем путь к БД для fetcher
+if os.path.exists('/home/wa/bot-data/bot.db'):
+    _set_db_path('/home/wa/bot-data/bot.db')
+elif os.path.exists(os.path.expanduser('~/ai-helper-test/bot.db')):
+    _set_db_path(os.path.expanduser('~/ai-helper-test/bot.db'))
+else:
+    from config import DB_PATH
+    _set_db_path(DB_PATH)
 
 
 @dp.message(Command("start"))
@@ -379,10 +389,14 @@ async def handle_text(message: Message):
         vat = "10%" if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")) else "22%"
         # Радио
         radio = "\n⚡ Сбор 73 860 ₽" if any(is_radio_electronics(c) for c in codes) else ""
-        name_clean = re.sub(r'\s*\(за исключением[^)]+\)', '', info['name']).strip()
+        # Полное название (из кэша SQLite или Excel)
+        from database import get_name_with_fallback
+        name_data = get_name_with_fallback(info['code'])
+        display_name = name_data['name']
+        display_name = re.sub(r'\s*\(за исключением[^)]+\)', '', display_name).strip()
         await message.answer(
             f"📋 <code>{info['code']}</code>\n"
-            f"🔧 {name_clean}\n"
+            f"🔧 {display_name}\n"
             f"💰 Пошлина: {info['tariff']} — {duty_type}\n"
             f"🧾 НДС: {vat}"
             f"{radio}"
@@ -424,19 +438,40 @@ async def handle_text(message: Message):
 
     # === ШАПКА (одна, сверху) ===
     header = ""
+    fetch_warnings = []  # Предупреждения о расхождениях
     if found_codes:
         info = found_codes[0]
         pt = info["parsed_tariff"]
-        header = f"📋 <b>Код:</b> <code>{info['code']}</code>\n"
-        name_clean = re.sub(r'\s*\(за исключением[^)]+\)', '', info['name']).strip()
-        header += f"🔧 {name_clean}\n"
+        code = info['code']
+        excel_name = info['name']
+        
+        # Пробуем получить полное название с сайтов (или из кэша SQLite)
+        try:
+            full_name, from_cache, warning = await asyncio.wait_for(
+                fetch_full_name(code, excel_name), timeout=8
+            )
+            if warning:
+                fetch_warnings.append(warning)
+            display_name = full_name if full_name else excel_name
+        except asyncio.TimeoutError:
+            logger.debug(f"fetch_full_name timeout для {code}")
+            display_name = excel_name
+        except Exception as e:
+            logger.debug(f"fetch_full_name ошибка для {code}: {e}")
+            display_name = excel_name
+        
+        # Очищаем (за исключением...) для компактности
+        display_name = re.sub(r'\s*\(за исключением[^)]+\)', '', display_name).strip()
+        
+        header = f"📋 <b>Код:</b> <code>{code}</code>\n"
+        header += f"🔧 {display_name}\n"
         header += f"💰 <b>Пошлина:</b> {info['tariff']}"
         if pt.get("type") in ("min", "plus", "fixed_eur"):
             header += f" — комбинированная ({pt['formula']})"
         elif pt.get("type") == "percent":
             header += " — адвалорная"
         header += "\n"
-        vat = "10% (льготная)" if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")) else "22% (базовая)"
+        vat = "10% (льготная)" if any(w in display_name.lower() for w in ("пищев", "детск", "медиц", "книг", "печат")) else "22% (базовая)"
         header += f"🧾 <b>НДС:</b> {vat}\n"
         if any(is_radio_electronics(c) for c in codes):
             header += "⚡ <b>Радиоэлектроника:</b> сбор 73 860 ₽\n"
@@ -467,6 +502,10 @@ async def handle_text(message: Message):
 
     if radio_detected and "⚡" not in answer and "73860" not in answer:
         answer = "⚡ <b>РАДИОЭЛЕКТРОНИКА: сбор 73 860 ₽</b> (Приложение №1)\n\n" + answer
+
+    # Добавляем предупреждения о расхождениях (если есть)
+    if fetch_warnings:
+        answer += "\n\n" + "\n".join(fetch_warnings)
 
     save_message(user_id, message.from_user.username or "", "assistant", answer)
     await safe_send(message, answer)
