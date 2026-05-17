@@ -497,6 +497,7 @@ async def handle_text(message: Message):
             vat_rate=vat_rate,
             ts_fallback=ts_fallback,
             ts_components=ts_components,
+            weight_kg=comps.get("weight_kg"),
         )
     else:
         # --- ШАПКА (только для не-расчётных или без суммы) ------
@@ -548,6 +549,7 @@ async def handle_text(message: Message):
                 vat_rate=vat_rate,
                 ts_fallback=ts_fallback,
                 ts_components=ts_components,
+                weight_kg=comps.get("weight_kg"),
             )
             if fallback:
                 answer += "\n\n" + fallback

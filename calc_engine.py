@@ -101,8 +101,40 @@ def _format_calculation_fallback(
 
     pt = tariff_info.get("parsed_tariff", {})
     rate = float(pt.get("percent", 0)) if pt.get("percent") else 0
+    eur_value = float(pt.get("eur_value", 0)) if pt.get("eur_value") else 0
+    tariff_type = pt.get("type", "")
 
-    duty = round(ts_num * rate / 100, 2) if rate else 0.0
+    # === РАСЧЁТ ПОШЛИНЫ ===
+    # Адвалорная часть (всегда)
+    duty_percent = round(ts_num * rate / 100, 2) if rate else 0.0
+
+    # EUR-компонента (для комбинированных ставок)
+    duty_eur_cur = 0.0  # в валюте инвойса
+    eur_conv_line = None
+    if eur_value and weight_kg:
+        eur_total = eur_value * weight_kg  # сумма в EUR
+        # Конвертируем EUR → ₽ → валюта инвойса
+        if rates and "EUR" in rates and currency in rates:
+            try:
+                eur_rub = eur_total * float(rates["EUR"])
+                duty_eur_cur = round(eur_rub / float(rates[currency]), 2)
+                eur_conv_line = (
+                    f"• Пошлина EUR: {eur_value} EUR/кг × {weight_kg} кг = {eur_total} EUR → "
+                    f"{eur_rub:,.2f} ₽ → {fmt(duty_eur_cur)} {currency}"
+                )
+            except (ValueError, TypeError, ZeroDivisionError):
+                pass
+
+    # Выбираем пошлину в зависимости от типа ставки
+    if tariff_type == "min":
+        # Комбинированная: max(%, EUR/кг)
+        duty = max(duty_percent, duty_eur_cur) if duty_eur_cur else duty_percent
+    elif tariff_type in ("plus", "fixed_eur"):
+        # Суммарная: % + EUR/кг или фикс EUR/кг
+        duty = duty_percent + duty_eur_cur
+    else:
+        duty = duty_percent
+
     vat = round((ts_num + duty) * vat_rate, 2)
 
     fee_rub = customs_fee_rub
@@ -215,16 +247,44 @@ def _format_calculation_fallback(
                         f"{fmt(round(ins_rub, 2))} ₽ → {fmt(ins_cur)} {currency}"
                     )
 
+    # EUR-компонента пошлины в конвертацию
+    if eur_conv_line:
+        conv_lines.append(eur_conv_line)
+
     if conv_lines:
         lines.append(f"🔄 Конвертация в валюту инвойса ({currency}):")
         lines.extend(conv_lines)
+        lines.append("")
+
+    # ── БЛОК РАСЧЁТА ПОШЛИНЫ (только для комбинированных с EUR) ──
+    if duty_eur_cur:
+        lines.append("⚖️ Расчёт пошлины:")
+        lines.append(f"• Адвалорная: {rate:g}% × {fmt(ts_num)} {currency} = {fmt(duty_percent)} {currency}")
+        if tariff_type == "min":
+            lines.append(f"• EUR-компонента: {eur_value} EUR/кг × {int(weight_kg)} кг = {eur_value * int(weight_kg)} EUR → {fmt(duty_eur_cur)} {currency}")
+            if duty_eur_cur > duty_percent:
+                lines.append(f"• Выбрано: EUR-компонента ({fmt(duty_eur_cur)} {currency} > {fmt(duty_percent)} {currency})")
+            else:
+                lines.append(f"• Выбрано: Адвалорная {rate:g}% ({fmt(duty_percent)} {currency} ≥ {fmt(duty_eur_cur)} {currency})")
+        elif tariff_type == "plus":
+            lines.append(f"• EUR-компонента: {eur_value} EUR/кг × {int(weight_kg)} кг = {eur_value * int(weight_kg)} EUR → {fmt(duty_eur_cur)} {currency}")
+            lines.append(f"• Выбрано: Сумма обоих вариантов ({fmt(duty_percent)} + {fmt(duty_eur_cur)} = {fmt(duty)} {currency})")
+        elif tariff_type == "fixed_eur":
+            lines.append(f"• EUR-компонента: {eur_value} EUR/кг × {int(weight_kg)} кг = {eur_value * int(weight_kg)} EUR → {fmt(duty_eur_cur)} {currency}")
+            lines.append(f"• Выбрано: Фиксированная EUR-компонента")
         lines.append("")
 
     # ── 3. ИТОГОВЫЙ РАСЧЁТ ────────────────────────
     # Собираем строки как пары (левый_текст, правый_текст) для выравнивания
     rows = []
     rows.append(("💰 Таможенная стоимость:", f"{fmt(ts_num)} {currency}"))
-    rows.append((f"📋 Пошлина {rate:g}%:", f"{fmt(duty)} {currency}"))
+    # Пошлина: обычная или комбинированная с EUR
+    if tariff_type == "min" and duty_eur_cur:
+        rows.append(("📋 Пошлина (max):", f"{fmt(duty)} {currency}"))
+    elif tariff_type in ("plus", "fixed_eur") and duty_eur_cur:
+        rows.append((f"📋 Пошлина ({rate:g}% + EUR):", f"{fmt(duty)} {currency}"))
+    else:
+        rows.append((f"📋 Пошлина {rate:g}%:", f"{fmt(duty)} {currency}"))
     rows.append((f"🧾 НДС {int(vat_rate * 100)}%:", f"{fmt(vat)} {currency}"))
     if fee_cur > 0:
         fee_right = f"{fmt(fee_cur)} {currency}  ({fee_rub:,.0f} ₽ → {fmt(fee_cur)} {currency})"

@@ -197,6 +197,11 @@ def extract_ts_components_with_currency(text: str) -> Dict[str, Dict[str, any]]:
     if ins:
         res["insurance"] = ins
 
+    # Вес
+    weight_m = re.search(r"(\d[\d\s,.]*)(?:\s*(?:кг|kg|килограмм|килограммов|кило|tons?|тн?\.?))", text_clean)
+    if weight_m:
+        res["weight_kg"] = _parse_num(weight_m.group(1))
+
     # Fallback invoice — первое число ≥ 1000
     # Если число идёт сразу после кода ТН ВЭД (позиция 0-2) — это инвойс
     # Не пропускаем если фрахт/страховка идёт через другое слово (например, "100000юаней фрахт")
