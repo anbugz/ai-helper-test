@@ -221,24 +221,22 @@ def _format_calculation_fallback(
         lines.append("")
 
     # ── 3. ИТОГОВЫЙ РАСЧЁТ ────────────────────────
-    lines.append("📊 Итоговый расчёт")
-
-    # Таможенная стоимость
-    lines.append(f"💰 Таможенная стоимость: {fmt(ts_num)} {currency}")
-
-    # Пошлина
-    lines.append(f"📋 Пошлина {rate:g}%:{' ' * max(1, 24 - len(f'📋 Пошлина {rate:g}%:'))}{fmt(duty)} {currency}")
-
-    # НДС
-    nds_label = f"🧾 НДС {int(vat_rate * 100)}%:"
-    lines.append(f"{nds_label}{' ' * max(1, 30 - len(nds_label))}{fmt(vat)} {currency}")
-
-    # Сбор
+    # Собираем строки как пары (левый_текст, правый_текст) для выравнивания
+    rows = []
+    rows.append(("💰 Таможенная стоимость:", f"{fmt(ts_num)} {currency}"))
+    rows.append((f"📋 Пошлина {rate:g}%:", f"{fmt(duty)} {currency}"))
+    rows.append((f"🧾 НДС {int(vat_rate * 100)}%:", f"{fmt(vat)} {currency}"))
     if fee_cur > 0:
-        fee_label = "⚡ Сбор:"
-        fee_conv_info = f" ({fee_rub:,.0f} ₽ → {fmt(fee_cur)} {currency})"
-        padding = max(1, 30 - len(fee_label) - len(fee_conv_info) + len(f" ({fee_rub:,.0f} ₽ → {fmt(fee_cur)} {currency})"))
-        lines.append(f"{fee_label}{' ' * max(1, 30 - len(fee_label))}{fmt(fee_cur)} {currency}{fee_conv_info}")
+        fee_right = f"{fmt(fee_cur)} {currency}  ({fee_rub:,.0f} ₽ → {fmt(fee_cur)} {currency})"
+        rows.append(("⚡ Сбор:", fee_right))
+
+    # Находим максимальную длину левой части + отступ
+    max_left = max(len(left) for left, _ in rows)
+    gap = 2  # минимум 2 пробела между левой и правой частью
+
+    lines.append("📊 Итоговый расчёт")
+    for left, right in rows:
+        lines.append(f"{left}{' ' * (max_left - len(left) + gap)}{right}")
 
     lines.append("───────────────────────────────────")
 
@@ -247,6 +245,7 @@ def _format_calculation_fallback(
     itogo_label = "💵 ИТОГО:"
     itogo_value = f"{fmt(total)} {currency}"
     itogo_rub = f"  (~ {total_rub})" if total_rub else ""
-    lines.append(f"{itogo_label}{' ' * max(1, 24 - len(itogo_label))}{itogo_value}{itogo_rub}")
+    itogo_padding = max_left - len(itogo_label) + gap
+    lines.append(f"{itogo_label}{' ' * itogo_padding}{itogo_value}{itogo_rub}")
 
     return "\n".join(lines)
