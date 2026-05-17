@@ -1,37 +1,24 @@
-#!/usr/bin/env python3
 """
 main.py — точка входа.
-Запуск: python main.py
-
-bothost: все .py файлы должны быть в одной папке.
+БЕЗ tnved_fetcher. Только Excel. Одна база.
 """
-import sys
-import os
 import asyncio
+import os
+import sys
 
-# bothost: гарантируем что текущая папка в PYTHONPATH
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import logger, VERSION
-from database import init_db, migrate_add_full_name
 from bot_instance import dp, bot
-from tnved_engine import restore_tnved_from_db
-
-# Импорт handlers регистрирует все @dp.message декораторы
-import handlers  # noqa: F401
+from config import VERSION, DB_PATH, logger
+from database import init_db, restore_tnved_from_db
 
 
-async def main() -> None:
+async def main():
     logger.info(f"Bot starting. Version: {VERSION}")
+    os.makedirs(os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else ".", exist_ok=True)
     init_db()
     logger.info("Database initialized.")
-    try:
-        migrate_add_full_name()
-        logger.info("Migration completed.")
-    except Exception as e:
-        logger.warning(f"Migration skipped: {e}")
     restore_tnved_from_db()
-    logger.info("TNVED cache restored from DB (if exists).")
     await dp.start_polling(bot)
 
 
