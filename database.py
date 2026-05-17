@@ -193,15 +193,21 @@ def save_tnved_batch(rows: List[List], parsed_rows: List[Dict]) -> None:
     logger.info(f"TNVED кэш: сохранено {len(rows)} кодов в БД")
 
 
+def get_all_tnved_from_db() -> List[Tuple]:
+    """Возвращает все коды ТН ВЭД из базы."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT code, name, tariff FROM tnved_cache")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
 def restore_tnved_from_db() -> None:
     """Восстанавливает TNVED кэш из SQLite при старте бота."""
     try:
         import tnved_engine
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT code, name, tariff, parsed_type, parsed_formula FROM tnved_cache")
-        rows = c.fetchall()
-        conn.close()
+        rows = get_all_tnved_from_db()
         if rows:
             tnved_engine._TNVED_ROWS_CACHE = [[r[0], r[1], r[2]] for r in rows]
             tnved_engine._build_tnved_index(tnved_engine._TNVED_ROWS_CACHE)
