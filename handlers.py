@@ -381,10 +381,11 @@ async def handle_text(message: Message):
         radio = "\n⚡ Сбор 73 860 ₽" if any(is_radio_electronics(c) for c in codes) else ""
         await message.answer(
             f"📋 <code>{info['code']}</code>\n"
-            f"🔧 {info['name'][:70]}\n"
+            f"🔧 {info['name']}\n"
             f"💰 Пошлина: {info['tariff']} — {duty_type}\n"
             f"🧾 НДС: {vat}"
             f"{radio}"
+            f"\n\n📌 <i>Точную информацию уточняйте у декларанта.</i>"
         )
         return
 
