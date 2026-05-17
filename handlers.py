@@ -351,11 +351,7 @@ async def handle_text(message: Message):
     radio_detected = any(is_radio_electronics(c) for c in codes)
     from database import get_tnved_from_db as _gtd
 
-    calc_words = ("инвойс", "сумма", "стоимость", "расчёт", "платеж", "пошлина",
-                  "ндс", "сбор", "таможенная", "тс", "фрахт", "страховк",
-                  "посчитай", "сколько будет", "узнать плат", "сколько плат")
-    is_calc = any(w in user_text.lower() for w in calc_words)
-
+    # Сначала ищем коды
     found_codes = []
     missing = []
     if codes:
@@ -365,6 +361,13 @@ async def handle_text(message: Message):
                 found_codes.append(info)
             else:
                 missing.append(c)
+
+    calc_words = ("инвойс", "сумма", "стоимость", "расчёт", "платеж", "пошлина",
+                  "ндс", "сбор", "таможенная", "тс", "фрахт", "страховк",
+                  "посчитай", "сколько будет", "узнать плат", "сколько плат")
+    # Если есть код и число больше 1000 — считаем расчётным запросом
+    has_amount = bool(re.search(r"\d{3,}", user_text))
+    is_calc = any(w in user_text.lower() for w in calc_words) or (bool(found_codes) and has_amount)
 
     # === БЫСТРЫЙ ОТВЕТ: только код, без расчёта ===
     if codes and found_codes and not is_calc:
