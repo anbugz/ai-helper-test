@@ -387,13 +387,35 @@ async def handle_text(message: Message):
     base_cur = detect_base_currency(user_text)
     has_ins = any(w in text_lower for w in ("страховка", "страхование"))
 
+    # ============================================================
+    # ОПРЕДЕЛЯЕМ ТИП ЗАПРОСА:
+    # 1. ВЭД-расчёт (is_calc=True)    → шапка + конвертация + итог
+    # 2. Быстрый ответ (код, не calc) → шапка + дисклеймер (уже обработано выше)
+    # 3. AI-ассистент (нет кода)      → общий вопрос → DeepSeek без ВЭД-контекста
+    # ============================================================
+    
+    # Инициализация переменных (используются в обоих сценариях)
+    ti = found_codes[0] if found_codes else None
+    vat_rate = 0.22
+    customs_fee_rub = 0.0
+    ts_fallback = 0.0
+    ts_components: Dict[str, Dict[str, any]] = {}
+    comps: Dict[str, Dict[str, any]] = {}
+
     rates = None
     try:
         rates = await get_cbr_rates()
-        cr = format_cross_rates(rates)
+    except Exception as e:
+        logger.error(f"Курсы: {e}")
+
+    if is_calc and found_codes:
+        # === СЦЕНАРИЙ 1: ВЭД-РАСЧЁТ ===
+        cr = format_cross_rates(rates) if rates else ""
         extra = (
-            f"[КУРСЫ ЦБ РФ {rates.get('DATE','')}] CNY={rates.get('CNY','')}₽ "
-            f"USD={rates.get('USD','')}₽ EUR={rates.get('EUR','')}₽. "
+            f"[КУРСЫ ЦБ РФ {rates.get('DATE','') if rates else ''}] "
+            f"CNY={rates.get('CNY','') if rates else ''}₽ "
+            f"USD={rates.get('USD','') if rates else ''}₽ "
+            f"EUR={rates.get('EUR','') if rates else ''}₽. "
             f"Кросс: {cr}. Валюта: {base_cur}. НДС: 22%/10%. "
         )
         extra += (
@@ -405,53 +427,43 @@ async def handle_text(message: Message):
         if has_ins:
             extra += "Страховка — в ТС. "
         extra += "НЕ придумывай ставки."
-    except Exception as e:
-        logger.error(f"Курсы: {e}")
-        extra = "[КУРСЫ ЦБ недоступны]. НДС: 22%/10%."
 
-    comps = extract_ts_components_with_currency(user_text)
-    # Базовая валюта = валюта инвойса, если определена. Иначе — detect_base_currency.
-    if "invoice" in comps and comps["invoice"]["currency"] != "RUB":
-        base_cur = comps["invoice"]["currency"]
-    else:
-        base_cur = detect_base_currency(user_text)
+        comps = extract_ts_components_with_currency(user_text)
+        # Базовая валюта = валюта инвойса, если определена
+        if "invoice" in comps and comps["invoice"]["currency"] != "RUB":
+            base_cur = comps["invoice"]["currency"]
+        else:
+            base_cur = detect_base_currency(user_text)
 
-    # Вычисляем ТС в валюте инвойса с конвертацией
-    ts_components: Dict[str, Dict[str, any]] = {}
-    ts_fallback = 0.0
-    if "invoice" in comps:
-        inv = comps["invoice"]
-        ts_fallback += inv["value"]
-        ts_components["invoice"] = {
-            "value": inv["value"], "currency": inv["currency"],
-            "converted": inv["value"], "rate": None,
-        }
-
-    for key in ("freight", "insurance"):
-        if key in comps:
-            comp = comps[key]
-            val = comp["value"]
-            cur = comp["currency"]
-            converted = val
-            rate_info = None
-            if cur != base_cur and rates and cur in rates and base_cur in rates:
-                try:
-                    rub_val = val * float(rates[cur])
-                    converted = round(rub_val / float(rates[base_cur]), 2)
-                    rate_info = f"{val} {cur} → {rub_val:,.2f} ₽ → {converted:,.2f} {base_cur}"
-                except (ValueError, TypeError, ZeroDivisionError):
-                    pass
-            ts_fallback += converted
-            ts_components[key] = {
-                "value": val, "currency": cur,
-                "converted": converted, "rate": rate_info,
+        # Вычисляем ТС в валюте инвойса с конвертацией
+        if "invoice" in comps:
+            inv = comps["invoice"]
+            ts_fallback += inv["value"]
+            ts_components["invoice"] = {
+                "value": inv["value"], "currency": inv["currency"],
+                "converted": inv["value"], "rate": None,
             }
 
-    vat_rate = 0.22
-    customs_fee_rub = 0.0
-    ti = found_codes[0] if found_codes else None
+        for key in ("freight", "insurance"):
+            if key in comps:
+                comp = comps[key]
+                val = comp["value"]
+                cur = comp["currency"]
+                converted = val
+                rate_info = None
+                if cur != base_cur and rates and cur in rates and base_cur in rates:
+                    try:
+                        rub_val = val * float(rates[cur])
+                        converted = round(rub_val / float(rates[base_cur]), 2)
+                        rate_info = f"{val} {cur} → {rub_val:,.2f} ₽ → {converted:,.2f} {base_cur}"
+                    except (ValueError, TypeError, ZeroDivisionError):
+                        pass
+                ts_fallback += converted
+                ts_components[key] = {
+                    "value": val, "currency": cur,
+                    "converted": converted, "rate": rate_info,
+                }
 
-    if ti:
         vat_rate = (
             0.10
             if any(
@@ -476,8 +488,24 @@ async def handle_text(message: Message):
         else:
             customs_fee_rub = calculate_customs_fee(ts_rub_for_fee)
 
-    msgs = build_messages(user_id, user_text, extra_context=extra)
-    answer = await ask_deepseek(msgs)
+        msgs = build_messages(user_id, user_text, extra_context=extra)
+        answer = await ask_deepseek(msgs)
+
+    else:
+        # === СЦЕНАРИЙ 3: AI-АССИСТЕНТ (общий вопрос) ===
+        # Контекст без ВЭД-специфики
+        extra = ""
+        if rates:
+            extra = (
+                f"[СПРАВОЧНО: курс ЦБ РФ {rates.get('DATE','')}] "
+                f"1 USD = {rates.get('USD','')} ₽, "
+                f"1 CNY = {rates.get('CNY','')} ₽, "
+                f"1 EUR = {rates.get('EUR','')} ₽"
+            )
+        msgs = build_messages(user_id, user_text, extra_context=extra or None)
+        answer = await ask_deepseek(msgs)
+
+    # После этого блок идёт обработка ответа DeepSeek...
     answer = _strip_deepseek_dup(answer)
 
     # --- РАСЧЁТНЫЙ ЗАПРОС: чистый fallback, без дублей ------------
