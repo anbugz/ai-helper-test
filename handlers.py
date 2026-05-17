@@ -473,9 +473,14 @@ async def handle_text(message: Message):
         for k in ("итого платежей", "итоговый расчёт", "итоговый расчет", "📊 итоговый")
     )
     if is_calc and base_cur and not has_deepseek_calc:
+        code_val = found_codes[0]["code"] if found_codes else None
+        name_val = (
+            TNVED_FULL_NAMES.get(found_codes[0]["code"][:6], found_codes[0]["name"])
+            if found_codes else None
+        )
         fallback = _format_calculation_fallback(
-            code=info["code"] if found_codes else None,
-            name=TNVED_FULL_NAMES.get(info["code"][:6], info["name"]) if found_codes else None,
+            code=code_val,
+            name=name_val,
             currency=base_cur,
             rates=rates or {},
             tariff_info=ti,
