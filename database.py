@@ -213,6 +213,10 @@ def get_all_knowledge() -> List[Dict]:
     ]
 
 
+# Alias для совместимости с handlers.py
+get_knowledge = get_all_knowledge
+
+
 def get_knowledge_by_topic(topic: str) -> Optional[Dict]:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -270,6 +274,31 @@ def add_custom_radio_code(code: str) -> None:
     except sqlite3.IntegrityError:
         pass
     conn.close()
+
+
+def save_custom_codes(codes: List[str]) -> int:
+    """Сохраняет список кодов радиоэлектроники в таблицу custom_radio_codes.
+    Возвращает количество добавленных кодов.
+    """
+    if not codes:
+        return 0
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    added = 0
+    for code in codes:
+        try:
+            c.execute(
+                "INSERT OR IGNORE INTO custom_radio_codes (code, added_at) VALUES (?, ?)",
+                (code, datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            if c.rowcount > 0:
+                added += 1
+        except sqlite3.Error:
+            continue
+    conn.commit()
+    conn.close()
+    logger.info(f"Сохранено {added} новых кодов радиоэлектроники")
+    return added
 
 
 def get_all_custom_radio_codes() -> List[str]:
