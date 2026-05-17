@@ -10,13 +10,11 @@ def _strip_deepseek_dup(answer: str) -> str:
     """Вырезает дубли от DeepSeek: шапку с кодом и блок Платежи.
     Осторожно: не трогаем хороший развёрнутый расчёт с "Итоговый расчёт" или "ИТОГО платежей".
     """
-    # Если DeepSeek вывёл полный красивый расчёт — оставляем как есть
     lower = answer.lower()
-    if any(k in lower for k in ("итого платежей", "итоговый расчёт", "итоговый расчет")):
+    if any(k in lower for k in ("итого платежей", "итоговый расчёт", "итоговый расчет", "📊 итоговый")):
         return answer.strip()
 
     lines = answer.split("\n")
-    # ШАГ 1: найти и вырезать блок "ПЛАТЕЖИ:" или "📊 Платежи:"
     pay_start = -1
     for i, line in enumerate(lines):
         ls = line.strip().lower()
@@ -31,7 +29,6 @@ def _strip_deepseek_dup(answer: str) -> str:
             break
     if pay_start >= 0:
         lines = lines[:pay_start]
-    # ШАГ 2: найти и вырезать шапку с кодом (перед 📊 ТС)
     tc_start = -1
     for i, line in enumerate(lines):
         if line.strip().startswith("📊 Таможенная стоимость:") or line.strip().startswith(
@@ -71,8 +68,8 @@ def _format_calculation_fallback(
     ts_fallback: Optional[float] = None,
     weight_kg: Optional[float] = None,
 ) -> str:
-    """Красивый fallback-расчёт, если DeepSeek не вывёл полный ответ.
-    Формат «как в примере пользователя».
+    """Компактный fallback-расчёт без пошаговой арифметики.
+    Формат: Исходные данные → Конвертация → Итоговый расчёт.
     """
     if not ts_fallback or not tariff_info:
         return ""
@@ -85,13 +82,9 @@ def _format_calculation_fallback(
     pt = tariff_info.get("parsed_tariff", {})
     rate = float(pt.get("percent", 0)) if pt.get("percent") else 0
 
-    # Пошлина (процентная часть)
     duty = round(ts_num * rate / 100, 2) if rate else 0.0
-
-    # НДС
     vat = round((ts_num + duty) * vat_rate, 2)
 
-    # Сбор в валюте
     fee_rub = customs_fee_rub
     fee_cur = 0.0
     if fee_rub > 0:
@@ -105,7 +98,6 @@ def _format_calculation_fallback(
 
     total = duty + vat + fee_cur
 
-    # Курс для конвертации
     rate_cur = None
     if rates and currency in rates:
         try:
@@ -121,28 +113,20 @@ def _format_calculation_fallback(
             return f"{fmt(round(val * rate_cur, 2))} ₽"
         return ""
 
-    # --- Собираем текст ---
     lines = []
 
-    # Исходные данные
+    # 📋 Исходные данные
     lines.append("📋 <b>Исходные данные:</b>")
     if code:
         lines.append(f"• Код ТН ВЭД: <code>{code}</code> — {name or '—'}")
-    lines.append(f"• Стоимость: <code>{fmt(ts_num)} {currency}</code>")
-    if weight_kg:
-        lines.append(f"• Вес: <code>{weight_kg} кг</code>")
-    else:
-        lines.append("• Вес: не указан")
-    lines.append("")
 
-    # Ставки
-    lines.append("📊 <b>Ставки:</b>")
     tariff_str = tariff_info.get("tariff", "—")
     duty_type = "адвалорная"
     if pt.get("type") in ("min", "plus", "fixed_eur"):
         duty_type = f"комбинированная ({pt.get('formula', '')})"
     elif pt.get("type") == "fixed_usd":
         duty_type = f"специфическая ({pt.get('formula', '')})"
+
     lines.append(f"• Пошлина: <b>{tariff_str}</b> ({duty_type})")
     lines.append(f"• НДС: <b>{int(vat_rate * 100)}%</b> ({'льготная' if vat_rate == 0.10 else 'базовая'})")
     if is_radio:
@@ -152,27 +136,36 @@ def _format_calculation_fallback(
             lines.append(f"• Сбор: <b>{fee_rub:,.0f} ₽</b> (по шкале ПП РФ №1637)")
         else:
             lines.append("• Сбор: <b>0 ₽</b>")
-    lines.append("")
-
-    # Расчёт
-    lines.append("📈 <b>Расчёт:</b>")
-    lines.append(f"1. Таможенная стоимость: <code>{fmt(ts_num)} {currency}</code>")
-    if rate_cur and currency != "RUB":
-        lines.append(f"2. ТС в рублях: {fmt(ts_num)} × {rate_cur} = <code>{to_rub(ts_num)}</code>")
-    if pt.get("type") in ("min", "plus"):
-        lines.append(f"3. Пошлина ({tariff_str}): <code>{fmt(duty)} {currency}</code> (процентная часть)")
-        lines.append("   ⚠️ Для точного расчёта нужен вес нетто (кг)")
+    lines.append(f"• Стоимость: <code>{fmt(ts_num)} {currency}</code>")
+    if weight_kg:
+        lines.append(f"• Вес: <code>{weight_kg} кг</code>")
     else:
-        lines.append(f"3. Пошлина ({rate}%): {fmt(ts_num)} × {rate}% = <code>{fmt(duty)} {currency}</code>")
-    lines.append(f"4. НДС {int(vat_rate * 100)}%: ({fmt(ts_num)} + {fmt(duty)}) × {int(vat_rate * 100)}% = <code>{fmt(vat)} {currency}</code>")
-    if fee_cur > 0:
-        if is_radio:
-            lines.append(f"5. Сбор: 73 860 ₽ → в {currency}: 73 860 / {rate_cur or '—'} = <code>{fmt(fee_cur)} {currency}</code>")
-        else:
-            lines.append(f"5. Сбор: {fee_rub:,.0f} ₽ → в {currency}: {fee_rub:,.0f} / {rate_cur or '—'} = <code>{fmt(fee_cur)} {currency}</code>")
+        lines.append("• Вес: не указан")
     lines.append("")
 
-    # Итоговая таблица
+    # 🔄 Конвертация
+    if rates:
+        usd_r = rates.get("USD", "—")
+        eur_r = rates.get("EUR", "—")
+        cny_r = rates.get("CNY", "—")
+        lines.append(f"🔄 <b>Конвертация в валюту инвойса ({currency}):</b>")
+        lines.append(f"• Курс ЦБ РФ: 1 USD = {usd_r} ₽, 1 CNY = {cny_r} ₽, 1 EUR = {eur_r} ₽")
+        lines.append(f"• Фрахт/страховка в USD/EUR/CNY → ₽ ЦБ РФ → {currency}")
+        if currency == "CNY" and usd_r not in ("—", "", None) and cny_r not in ("—", "", None):
+            try:
+                cross = round(float(usd_r) / float(cny_r), 4)
+                lines.append(f"• Кросс USD→CNY: 1 USD = {cross} CNY")
+            except (ValueError, TypeError):
+                pass
+        elif currency == "USD" and usd_r not in ("—", "", None) and cny_r not in ("—", "", None):
+            try:
+                cross = round(float(cny_r) / float(usd_r), 4)
+                lines.append(f"• Кросс CNY→USD: 1 CNY = {cross} USD")
+            except (ValueError, TypeError):
+                pass
+        lines.append("")
+
+    # 📊 Итоговый расчёт
     lines.append("📊 <b>Итоговый расчёт</b>")
     lines.append(f"Таможенная стоимость:  {fmt(ts_num):>12} {currency}   (~ {to_rub(ts_num)})")
     lines.append(f"Пошлина {rate}%:        {fmt(duty):>12} {currency}   (~ {to_rub(duty)})")
