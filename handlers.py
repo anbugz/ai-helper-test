@@ -427,7 +427,8 @@ async def handle_text(message: Message):
         info = found_codes[0]
         pt = info["parsed_tariff"]
         header = f"📋 <b>Код:</b> <code>{info['code']}</code>\n"
-        header += f"🔧 {info['name'][:150]}\n"
+        name_clean = re.sub(r'\s*\(за исключением[^)]+\)', '', info['name']).strip()
+        header += f"🔧 {name_clean[:150]}\n"
         header += f"💰 <b>Пошлина:</b> {info['tariff']}"
         if pt.get("type") in ("min", "plus", "fixed_eur"):
             header += f" — комбинированная ({pt['formula']})"
