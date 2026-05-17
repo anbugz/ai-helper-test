@@ -184,6 +184,26 @@ async def get_cbr_rates() -> Dict[str, str]:
     return rates
 
 
+def convert_fee_to_currency(fee_rub: float, currency: str, rates: Dict[str, str]) -> tuple:
+    """Конвертирует сбор из рублей в валюту инвойса.
+    Возвращает: (fee_in_currency, display_string)
+    Пример: convert_fee_to_currency(1231, "CNY", rates) -> (13.45, "1 231 ₽ → 13.45 CNY")
+    """
+    if fee_rub <= 0:
+        return 0.0, "0 ₽"
+    if currency == "RUB" or not rates:
+        return fee_rub, f"{fee_rub:,.0f} ₽"
+    if currency in rates:
+        try:
+            rate_val = float(rates[currency])
+            if rate_val > 0:
+                fee_cur = round(fee_rub / rate_val, 2)
+                return fee_cur, f"{fee_rub:,.0f} ₽ → {fee_cur:,.2f} {currency}"
+        except (ValueError, TypeError, ZeroDivisionError):
+            pass
+    return fee_rub, f"{fee_rub:,.0f} ₽"
+
+
 def format_cross_rates(rates: Dict[str, str]) -> str:
     parts = []
     try:

@@ -6,7 +6,7 @@ import re
 from typing import List, Dict, Optional, Set
 from parsers import parse_tnved_tariff
 from database import save_tnved_batch, get_tnved_from_db, get_all_tnved_from_db
-from config import RADIO_ELECTRONICS_CODES_SET, _RADIO_GROUPS, logger
+from config import RADIO_ELECTRONICS_CODES_SET, _RADIO_GROUPS, TNVED_FULL_NAMES, logger
 
 # ------------------------------------------------------------------
 # Кэш (в памяти, не в SQLite)
@@ -28,11 +28,24 @@ def _build_tnved_index(rows: List[List[str]]) -> None:
 
 
 def load_tnved_rows(rows: List[List[str]], persist: bool = True) -> None:
-    """Загружает строки ТН ВЭД в кэш, строит индекс, сохраняет в SQLite."""
+    """Загружает строки ТН ВЭД в кэш, строит индекс, сохраняет в SQLite, заполняет TNVED_FULL_NAMES."""
     global _TNVED_ROWS_CACHE
     _TNVED_ROWS_CACHE = [r for r in rows if r and any(str(c).strip() for c in r)]
     _build_tnved_index(_TNVED_ROWS_CACHE)
-    logger.info(f"TNVED кэш: {len(_TNVED_ROWS_CACHE)} строк, {len(_TNVED_INDEX)} кодов")
+    # Заполняем полные наименования из загруженных данных
+    TNVED_FULL_NAMES.clear()
+    for row in _TNVED_ROWS_CACHE:
+        if not row or not isinstance(row[0], str):
+            continue
+        code = row[0].replace(" ", "").strip()
+        name = row[1] if len(row) > 1 else ""
+        if len(code) >= 6 and code.isdigit() and name:
+            prefix = code[:6]
+            # Сохраняем самое длинное наименование для префикса
+            if prefix not in TNVED_FULL_NAMES or len(name) > len(TNVED_FULL_NAMES[prefix]):
+                TNVED_FULL_NAMES[prefix] = name
+    logger.info(f"TNVED кэш: {len(_TNVED_ROWS_CACHE)} строк, {len(_TNVED_INDEX)} кодов, "
+                f"{len(TNVED_FULL_NAMES)} полных наименований")
     if persist:
         parsed_rows = [
             parse_tnved_tariff(row[2] if len(row) > 2 else "") for row in _TNVED_ROWS_CACHE
@@ -41,7 +54,7 @@ def load_tnved_rows(rows: List[List[str]], persist: bool = True) -> None:
 
 
 def restore_tnved_from_db() -> bool:
-    """Восстанавливает кэш ТН ВЭД из SQLite при старте бота."""
+    """Восстанавливает кэш ТН ВЭД из SQLite при старте бота, включая полные наименования."""
     global _TNVED_ROWS_CACHE
     rows = get_all_tnved_from_db()
     if not rows:
@@ -49,7 +62,19 @@ def restore_tnved_from_db() -> bool:
         return False
     _TNVED_ROWS_CACHE = rows
     _build_tnved_index(_TNVED_ROWS_CACHE)
-    logger.info(f"TNVED кэш восстановлен из БД: {len(_TNVED_ROWS_CACHE)} строк")
+    # Восстанавливаем полные наименования
+    TNVED_FULL_NAMES.clear()
+    for row in rows:
+        if not row or not isinstance(row[0], str):
+            continue
+        code = row[0].replace(" ", "").strip()
+        name = row[1] if len(row) > 1 else ""
+        if len(code) >= 6 and code.isdigit() and name:
+            prefix = code[:6]
+            if prefix not in TNVED_FULL_NAMES or len(name) > len(TNVED_FULL_NAMES[prefix]):
+                TNVED_FULL_NAMES[prefix] = name
+    logger.info(f"TNVED кэш восстановлен из БД: {len(_TNVED_ROWS_CACHE)} строк, "
+                f"{len(TNVED_FULL_NAMES)} полных наименований")
     return True
 
 

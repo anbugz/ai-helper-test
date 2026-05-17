@@ -52,6 +52,7 @@ from utils import (
     safe_send,
     parse_date_range,
     extract_ts_components_with_currency,
+    convert_fee_to_currency,
 )
 
 
@@ -397,6 +398,7 @@ async def handle_text(message: Message):
             "ТС (п.1 ст.40 ТК ЕАЭС): Инвойс + Фрахт + Страховка + Упаковка + Прочее. "
             "Не указано → 0. Всё в валюте инвойса. "
             "Конвертация: чужая валюта → ₽ ЦБ → валюта инвойса. "
+            "СБОР (таможенный и радио): считай в ₽, затем конвертируй в валюту инвойса (CNY/USD/EUR). "
         )
         if has_ins:
             extra += "Страховка — в ТС. "
@@ -509,14 +511,19 @@ async def handle_text(message: Message):
             vat_str = "10% (льготная)" if vat_rate == 0.10 else "22% (базовая)"
             header += f"🧾 <b>НДС:</b> {vat_str}\n"
             if radio_detected:
-                header += "⚡ <b>Радиоэлектроника:</b> сбор 73 860 ₽\n"
+                _, fee_display = convert_fee_to_currency(RADIO_FEE, base_cur or "RUB", rates or {})
+                header += f"⚡ <b>Радиоэлектроника:</b> сбор {fee_display}\n"
             if missing:
                 header += f"⚠️ Не найдены: {', '.join(missing)}\n"
 
         # Fallback если DeepSeek не вывёл платежи
         has_deepseek_calc = any(
             k in answer.lower()
-            for k in ("итого платежей", "итоговый расчёт", "итоговый расчет", "📊 итоговый")
+            for k in (
+                "итого платежей", "итоговый расчёт", "итоговый расчет", "📊 итоговый",
+                "платежи в валюте", "платежи:", "итого:", "итого к оплате",
+                "таможенная стоимость:", "таможенных платежей",
+            )
         )
         if is_calc and base_cur and not has_deepseek_calc:
             code_val = found_codes[0]["code"] if found_codes else None
