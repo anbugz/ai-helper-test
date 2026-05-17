@@ -430,8 +430,10 @@ def _col_letter(idx: int) -> str:
 
 
 def _escape_xml(text: str) -> str:
-    """Экранирует XML-спецсимволы."""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    """Экранирует XML-спецсимволы и переводы строк."""
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    text = text.replace("\r\n", "&#10;").replace("\n", "&#10;").replace("\r", "&#10;")
+    return text
 
 
 def create_logs_xlsx(rows: List[Tuple], sheet_name: str = "logs") -> bytes:
@@ -450,13 +452,17 @@ def create_logs_xlsx(rows: List[Tuple], sheet_name: str = "logs") -> bytes:
         '  <sheets>\n'
         f'    <sheet name="{_escape_xml(sheet_name)}" sheetId="1" r:id="rId1"/>\n'
         '  </sheets>\n'
+        '  <calcPr calcId="124519" fullCalcOnLoad="1"/>\n'
         '</workbook>'
     ).encode("utf-8")
 
     # --- worksheet.xml ---
+    max_col = 4  # A-E (0-4)
+    max_row = len(rows) + 1
     ws_parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n',
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">\n',
+        f'  <dimension ref="A1:{_col_letter(max_col)}{max_row}"/>\n',
         '  <sheetData>\n',
     ]
     # Заголовок
@@ -466,15 +472,16 @@ def create_logs_xlsx(rows: List[Tuple], sheet_name: str = "logs") -> bytes:
         cell_ref = f"{_col_letter(c_idx)}1"
         ws_parts.append(f'      <c r="{cell_ref}" t="inlineStr"><is><t>{_escape_xml(h)}</t></is></c>\n')
     ws_parts.append('    </row>\n')
-    # Данные
+    # Данные — все ячейки как inlineStr (текст)
     for r_idx, row in enumerate(rows, 2):
         ws_parts.append(f'    <row r="{r_idx}">\n')
         for c_idx, value in enumerate(row):
             cell_ref = f"{_col_letter(c_idx)}{r_idx}"
             safe_val = str(value) if value is not None else ""
-            ws_parts.append(f'      <c r="{cell_ref}"><v>{_escape_xml(safe_val)}</v></c>\n')
+            ws_parts.append(f'      <c r="{cell_ref}" t="inlineStr"><is><t>{_escape_xml(safe_val)}</t></is></c>\n')
         ws_parts.append('    </row>\n')
     ws_parts.append('  </sheetData>\n')
+    ws_parts.append('  <sheetViews><sheetView tabSelected="1" workbookViewId="0"/></sheetViews>\n')
     ws_parts.append('</worksheet>')
     ws_xml = "".join(ws_parts).encode("utf-8")
 
