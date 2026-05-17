@@ -68,21 +68,36 @@ def _parse_num(s: str) -> float:
 
 
 def extract_ts_components(text: str) -> Dict[str, float]:
-    """Пытается извлечь инвойс, фрахт, страховку из текста пользователя."""
+    """Пытается извлечь инвойс, фрахт, страховку из текста пользователя.
+    Если ключевых слов нет — первое число >= 1000 считаем инвойсом."""
     res: Dict[str, float] = {}
     text_lower = text.lower()
+    # Убираем коды ТН ВЭД, чтобы не путать с суммами
+    text_clean = re.sub(r"\d{8,10}", "", text_lower)
+
     m = re.search(
         r"(?:инвойс|сумма|стоимость|цена)[^\d]*(\d[\d\s,.]+)(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?",
-        text_lower,
+        text_clean,
     )
     if m:
         res["invoice"] = _parse_num(m.group(1))
-    m = re.search(r"(?:фрахт|доставка|перевозка)[^\d]*(\d[\d\s,.]+)", text_lower)
+
+    m = re.search(r"(?:фрахт|доставка|перевозка)[^\d]*(\d[\d\s,.]+)", text_clean)
     if m:
         res["freight"] = _parse_num(m.group(1))
-    m = re.search(r"(?:страховка|страхование)[^\d]*(\d[\d\s,.]+)", text_lower)
+
+    m = re.search(r"(?:страховка|страхование)[^\d]*(\d[\d\s,.]+)", text_clean)
     if m:
         res["insurance"] = _parse_num(m.group(1))
+
+    # Fallback: если ничего не нашли, берём первое число >= 1000
+    if not res:
+        m = re.search(r"(\d[\d\s,.]{2,})(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?", text_clean)
+        if m:
+            val = _parse_num(m.group(1))
+            if val >= 1000:
+                res["invoice"] = val
+
     return res
 
 
