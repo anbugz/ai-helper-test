@@ -2,6 +2,7 @@
 handlers.py — все хэндлеры aiogram.
 """
 import asyncio
+from typing import Dict
 import re
 from datetime import timedelta
 from aiogram import types, F
@@ -50,7 +51,7 @@ from utils import (
     ask_deepseek,
     safe_send,
     parse_date_range,
-    extract_ts_components,
+    extract_ts_components_with_currency,
 )
 
 
@@ -230,7 +231,7 @@ async def handle_document(message: Message):
             )
             return
 
-        lines = ["<<b>Excel:</b>"]
+        lines = ["<b>Excel:</b>"]
         for i, row in enumerate(
             [r for r in data if r and any(str(c).strip() for c in r)][:15], 1
         ):
@@ -404,8 +405,39 @@ async def handle_text(message: Message):
         logger.error(f"Курсы: {e}")
         extra = "[КУРСЫ ЦБ недоступны]. НДС: 22%/10%."
 
-    comps = extract_ts_components(user_text)
-    ts_fallback = sum(v for v in comps.values() if v) if comps else None
+    comps = extract_ts_components_with_currency(user_text)
+    base_cur = detect_base_currency(user_text)
+
+    # Вычисляем ТС в валюте инвойса с конвертацией
+    ts_components: Dict[str, Dict[str, any]] = {}
+    ts_fallback = 0.0
+    if "invoice" in comps:
+        inv = comps["invoice"]
+        ts_fallback += inv["value"]
+        ts_components["invoice"] = {
+            "value": inv["value"], "currency": inv["currency"],
+            "converted": inv["value"], "rate": None,
+        }
+
+    for key in ("freight", "insurance"):
+        if key in comps:
+            comp = comps[key]
+            val = comp["value"]
+            cur = comp["currency"]
+            converted = val
+            rate_info = None
+            if cur != base_cur and rates and cur in rates and base_cur in rates:
+                try:
+                    rub_val = val * float(rates[cur])
+                    converted = round(rub_val / float(rates[base_cur]), 2)
+                    rate_info = f"{val} {cur} → {rub_val:,.2f} ₽ → {converted:,.2f} {base_cur}"
+                except (ValueError, TypeError, ZeroDivisionError):
+                    pass
+            ts_fallback += converted
+            ts_components[key] = {
+                "value": val, "currency": cur,
+                "converted": converted, "rate": rate_info,
+            }
 
     vat_rate = 0.22
     customs_fee_rub = 0.0
@@ -456,6 +488,7 @@ async def handle_text(message: Message):
             customs_fee_rub=customs_fee_rub,
             vat_rate=vat_rate,
             ts_fallback=ts_fallback,
+            ts_components=ts_components,
         )
     else:
         # --- ШАПКА (только для не-расчётных или без суммы) ------
@@ -464,7 +497,7 @@ async def handle_text(message: Message):
             info = found_codes[0]
             pt = info["parsed_tariff"]
             header = f"📋 <b>Код:</b> <code>{info['code']}</code>\n"
-            name_clean = re.sub(r"\s*\(за исключением[^)]+\)", "", info["name"]).strip()
+            name_clean = re.sub(r"\s*\(за исключением[^)]+", "", info["name"]).strip()
             full_name = TNVED_FULL_NAMES.get(info["code"][:6], name_clean)
             header += f"🔧 {full_name}\n"
             header += f"💰 <b>Пошлина:</b> {info['tariff']}"
@@ -501,6 +534,7 @@ async def handle_text(message: Message):
                 customs_fee_rub=customs_fee_rub,
                 vat_rate=vat_rate,
                 ts_fallback=ts_fallback,
+                ts_components=ts_components,
             )
             if fallback:
                 answer += "\n\n" + fallback
