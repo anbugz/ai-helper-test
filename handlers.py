@@ -251,8 +251,8 @@ def _format_payments_box(answer: str, currency: str, rates: dict = None, tariff_
                     if val:
                         data[key] = val
                 break
-    # Fallback: если DeepSeek не вывел платежи, но есть ТС и ставки — считаем сами
-    if ("пошлина" not in data and "ндс" not in data) and ts_val and tariff_info:
+    # Всегда считаем сами из ТС и ставок — игнорируем расчёт DeepSeek
+    if ts_val and tariff_info:
         try:
             ts_num = float(ts_val.replace(" ", "").replace(",", "."))
             pt = tariff_info.get("parsed_tariff", {})
