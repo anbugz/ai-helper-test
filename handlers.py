@@ -470,5 +470,15 @@ async def handle_text(message: Message):
     if "декларант" not in answer.lower():
         answer += "\n\n📌 <i>Точную информацию уточняйте у декларанта.</i>"
 
+    # Курс ЦБ РФ — всегда в конце
+    try:
+        rates = await get_cbr_rates()
+        cny = rates.get('CNY', 'н/д')
+        usd = rates.get('USD', 'н/д')
+        date = rates.get('DATE', 'сегодня')
+        answer += f"\n\n💱 <i>Курс ЦБ РФ на {date}: 1 USD = {usd} ₽, 1 CNY = {cny} ₽</i>"
+    except Exception:
+        pass
+
     save_message(user_id, message.from_user.username or "", "assistant", answer)
     await safe_send(message, answer)
