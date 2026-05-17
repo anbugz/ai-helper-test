@@ -37,10 +37,10 @@ def detect_base_currency(text: str) -> str:
     for synonym, code in CURRENCY_SYNONYMS.items():
         if synonym in text_lower:
             return code
-    if re.search(r"\b(CNY|USD|EUR|RUB)\b", text_upper := text.upper()):
-        for c in ("CNY", "USD", "EUR", "RUB"):
-            if c in text_upper:
-                return c
+    text_upper = text.upper()
+    for c in ("CNY", "USD", "EUR", "RUB"):
+        if c in text_upper:
+            return c
     if "юан" in text_lower or "китайск" in text_lower or "rmb" in text_lower:
         return "CNY"
     if "доллар" in text_lower or "бакс" in text_lower or "$" in text:
@@ -57,6 +57,33 @@ def extract_currencies(text: str) -> Dict[str, str]:
         if synonym in text_lower:
             found[code] = synonym
     return found
+
+
+def _parse_num(s: str) -> float:
+    s = s.strip().replace(" ", "").replace(",", ".")
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def extract_ts_components(text: str) -> Dict[str, float]:
+    """Пытается извлечь инвойс, фрахт, страховку из текста пользователя."""
+    res: Dict[str, float] = {}
+    text_lower = text.lower()
+    m = re.search(
+        r"(?:инвойс|сумма|стоимость|цена)[^\d]*(\d[\d\s,.]+)(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?",
+        text_lower,
+    )
+    if m:
+        res["invoice"] = _parse_num(m.group(1))
+    m = re.search(r"(?:фрахт|доставка|перевозка)[^\d]*(\d[\d\s,.]+)", text_lower)
+    if m:
+        res["freight"] = _parse_num(m.group(1))
+    m = re.search(r"(?:страховка|страхование)[^\d]*(\d[\d\s,.]+)", text_lower)
+    if m:
+        res["insurance"] = _parse_num(m.group(1))
+    return res
 
 
 CBR_URL = "https://www.cbr.ru/scripts/XML_daily.asp"
@@ -166,7 +193,8 @@ async def safe_send(message: Message, text: str, chunk: int = 4000) -> None:
             await message.answer(part)
             await asyncio.sleep(0.3)
     except TelegramBadRequest as e:
-        if "parse" in str(e).lower() or "tag" in str(e).lower() or "entity" in str(e).lower():
+        err = str(e).lower()
+        if "parse" in err or "tag" in err or "entity" in err:
             plain = text.replace("<b>", "").replace("</b>", "")
             plain = plain.replace("<i>", "").replace("</i>", "")
             plain = plain.replace("<code>", "").replace("</code>", "")

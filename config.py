@@ -18,7 +18,7 @@ else:
     _default_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.db")
 DB_PATH = os.getenv("DB_PATH", _default_db)
 
-VERSION = "rev10 | 2026-05-16 | АБ"
+VERSION = "rev11 | 2026-05-17 | АБ"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ RADIO_ELECTRONICS_CODES_SET: Set[str] = set(RADIO_ELECTRONICS_CODES_LIST)
 _RADIO_GROUPS: Set[str] = {"84", "85", "90", "91", "95"}
 
 CURRENCY_SYNONYMS: Dict[str, str] = {
-    "юань": "CNY", "юани": "CNY", "юаней": "CNY", "ю": "CNY",
+    "юань": "CNY", "юани": "CNY", "юаней": "CNY",
     "rmb": "CNY", "китайский": "CNY", "китайских": "CNY", "китайские": "CNY", "юанях": "CNY",
     "доллар": "USD", "доллары": "USD", "доллара": "USD", "бакс": "USD", "баксы": "USD",
     "бакса": "USD", "$": "USD", "баксов": "USD", "зеленый": "USD", "зеленые": "USD",
@@ -74,6 +74,8 @@ CURRENCY_SYNONYMS: Dict[str, str] = {
     "рубль": "RUB", "рубли": "RUB", "руб": "RUB", "₽": "RUB",
     "рублей": "RUB", "рублях": "RUB", "российский рубль": "RUB",
 }
+
+TNVED_FULL_NAMES: Dict[str, str] = {}
 
 SYSTEM_PROMPT = """Ты — AI-помощник для менеджеров компании West Asia по ВЭД и логистике.
 

@@ -9,19 +9,25 @@ from typing import Dict, Optional
 def _strip_deepseek_dup(answer: str) -> str:
     """Вырезает дубли от DeepSeek: шапку с кодом и блок Платежи."""
     lines = answer.split("\n")
-    # ШАГ 1: найти и вырезать блок "ПЛАТЕЖИ:" или "📊 Платежи:"
     pay_start = -1
     for i, line in enumerate(lines):
         ls = line.strip().lower()
-        if ls in ("платежи:", "платежи") or ls.startswith("📊 платежи:") or ls.startswith("📊 **платежи**") or "**платежи**" in ls or "платежи в валюте" in ls:
+        if (
+            ls in ("платежи:", "платежи")
+            or ls.startswith("📊 платежи:")
+            or ls.startswith("📊 **платежи**")
+            or "**платежи**" in ls
+            or "платежи в валюте" in ls
+        ):
             pay_start = i
             break
     if pay_start >= 0:
         lines = lines[:pay_start]
-    # ШАГ 2: найти и вырезать шапку с кодом (перед 📊 ТС)
     tc_start = -1
     for i, line in enumerate(lines):
-        if line.strip().startswith("📊 Таможенная стоимость:") or line.strip().startswith("📊 Таможенная стоим"):
+        if line.strip().startswith("📊 Таможенная стоимость:") or line.strip().startswith(
+            "📊 Таможенная стоим"
+        ):
             tc_start = i
             break
     if tc_start > 0:
@@ -29,7 +35,10 @@ def _strip_deepseek_dup(answer: str) -> str:
         has_header = False
         for j in range(tc_start - 1, -1, -1):
             ls = lines[j].strip()
-            if any(ls.startswith(k) for k in ("📋 Код:", "📋 **Код:**", "🔧", "💰", "🧾", "⚡")):
+            if any(
+                ls.startswith(k)
+                for k in ("📋 Код:", "📋 **Код:**", "🔧", "💰", "🧾", "⚡")
+            ):
                 has_header = True
                 header_end = j
             elif ls == "":
@@ -41,54 +50,94 @@ def _strip_deepseek_dup(answer: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _format_payments_box(answer: str, currency: str, rates: dict = None, tariff_info: dict = None, is_radio: bool = False) -> str:
-    """Красивый итоговый расчёт с ТС, эмодзи и рублевым эквивалентом."""
+def _format_payments_box(
+    answer: str,
+    currency: str,
+    rates: dict = None,
+    tariff_info: dict = None,
+    is_radio: bool = False,
+    customs_fee_rub: float = 0,
+    vat_rate: float = 0.22,
+    ts_fallback: float = None,
+) -> str:
+    """Красивый итоговый расчёт с ТС, эмодзи и рублевым эквивалентом.
+    Если DeepSeek не вывёл ТС — использует ts_fallback из запроса пользователя.
+    """
     lines = answer.split("\n")
     data: dict = {}
     ts_val = None
-    cur_pat = {"USD": r"USD|\\$", "EUR": r"EUR|€", "CNY": r"CNY|CNH|¥", "RUB": r"RUB|₽"}
+    cur_pat = {
+        "USD": r"USD|\$",
+        "EUR": r"EUR|€",
+        "CNY": r"CNY|CNH|¥",
+        "RUB": r"RUB|₽|руб|р\.",
+    }
     cur_re = cur_pat.get(currency, re.escape(currency))
-    
-    # Ищем ТС в ответе
+
     for line in lines:
         ls = line.strip().lower()
-        if any(k in ls for k in ("тс:", "таможенная стоимость:")):
-            m = re.search(r"([\d\s,.]+)\s*(?:" + cur_re + r")", line, re.IGNORECASE)
+        if any(k in ls for k in ("тс:", "таможенная стоимость:", "тс ", "итоговая стоимость")):
+            m = re.search(
+                r"([\d\s,.]+)\s*(?:" + cur_re + r"|₽|руб|р\.)",
+                line,
+                re.IGNORECASE,
+            )
             if m:
                 ts_val = m.group(1).strip().replace(" ", "")
-    
-    # Всегда считаем сами если есть ТС и ставки
-    if ts_val and tariff_info:
-        try:
-            ts_num = float(ts_val.replace(" ", "").replace(",", "."))
-            pt = tariff_info.get("parsed_tariff", {})
-            rate = float(pt.get("rate", 0)) if pt.get("rate") else 0
-            duty = round(ts_num * rate / 100, 2) if rate else 0
-            data["пошлина"] = f"{duty:,.2f}".replace(",", " ")
-            vat = round((ts_num + duty) * 0.22, 2)
-            data["ндс"] = f"{vat:,.2f}".replace(",", " ")
-            data["сбор"] = "—" if is_radio else "0"
-            total = duty + vat
-            data["итого"] = f"{total:,.2f}".replace(",", " ")
-        except (ValueError, TypeError):
-            pass
-    
-    if "пошлина" not in data and "ндс" not in data:
+                break
+
+    if not ts_val and ts_fallback:
+        ts_val = f"{ts_fallback:,.2f}".replace(",", " ")
+
+    if not ts_val or not tariff_info:
         return ""
-    
-    # Ставки для подписей
+
+    try:
+        ts_num = float(ts_val.replace(" ", "").replace(",", "."))
+    except (ValueError, TypeError):
+        return ""
+
+    pt = tariff_info.get("parsed_tariff", {})
+    rate = float(pt.get("percent", 0)) if pt.get("percent") else 0
+
+    duty = round(ts_num * rate / 100, 2) if rate else 0
+    data["пошлина"] = f"{duty:,.2f}".replace(",", " ")
+
+    vat = round((ts_num + duty) * vat_rate, 2)
+    data["ндс"] = f"{vat:,.2f}".replace(",", " ")
+
+    fee_rub = customs_fee_rub
+    fee_cur = 0.0
+    if fee_rub > 0:
+        if currency == "RUB":
+            fee_cur = fee_rub
+        elif rates and currency in rates:
+            try:
+                fee_cur = round(fee_rub / float(rates[currency]), 2)
+            except (ValueError, TypeError, ZeroDivisionError):
+                fee_cur = 0.0
+    data["сбор"] = f"{fee_cur:,.2f}".replace(",", " ") if fee_cur > 0 else "0"
+
+    total = duty + vat + fee_cur
+    data["итого"] = f"{total:,.2f}".replace(",", " ")
+
     duty_label = "Пошлина"
-    vat_label = "НДС 22%"
-    fee_label = "Сбор (радио) 73 860 ₽" if is_radio else "Сбор"
     if tariff_info:
         pt = tariff_info.get("parsed_tariff", {})
         if pt.get("type") == "percent":
             duty_label = f"Пошлина {tariff_info.get('tariff', '')}"
         elif pt.get("type") in ("min", "plus", "fixed_eur"):
             duty_label = f"Пошлина {tariff_info.get('tariff', '')}"
-    
+            if pt.get("type") in ("min", "plus"):
+                data["предупреждение"] = (
+                    "⚠️ Нужен вес нетто (кг) для точного расчёта EUR/кг."
+                )
+
+    vat_label = f"НДС {int(vat_rate * 100)}%"
+    fee_label = "Сбор (радио) 73 860 ₽" if is_radio else "Сбор"
+
     def to_rub(val_str):
-        if not rates or currency not in rates:
+        if not rates or currency not in rates or currency == "RUB":
             return None
         try:
             rate = float(rates[currency])
@@ -96,16 +145,15 @@ def _format_payments_box(answer: str, currency: str, rates: dict = None, tariff_
             return round(v * rate, 2)
         except (ValueError, TypeError):
             return None
-    
+
     parts = ["\n📊 <b>Итоговый расчёт</b>\n"]
-    if ts_val:
-        parts.append(f"💰 Таможенная стоимость: <code>{ts_val} {currency}</code>")
-        rub = to_rub(ts_val)
-        if rub:
-            rub_str = f"{rub:,.2f}".replace(",", " ")
-            parts.append(f"   ~ <code>{rub_str} ₽</code>")
-        parts.append("")
-    
+    parts.append(f"💰 Таможенная стоимость: <code>{ts_val} {currency}</code>")
+    rub = to_rub(ts_val)
+    if rub:
+        rub_str = f"{rub:,.2f}".replace(",", " ")
+        parts.append(f"   ~ <code>{rub_str} ₽</code>")
+    parts.append("")
+
     for key, emoji in (("пошлина", "📋"), ("ндс", "🧾"), ("сбор", "⚡")):
         if key in data:
             lbl = {"пошлина": duty_label, "ндс": vat_label, "сбор": fee_label}[key]
@@ -114,13 +162,16 @@ def _format_payments_box(answer: str, currency: str, rates: dict = None, tariff_
             if rub and rub > 0:
                 rub_str = f"{rub:,.2f}".replace(",", " ")
                 parts.append(f"   ~ <code>{rub_str} ₽</code>")
-    
+
+    if "предупреждение" in data:
+        parts.append(f"\n<i>{data['предупреждение']}</i>")
+
     if "итого" in data:
         parts.append("─────────────────────")
         parts.append(f"💵 <b>ИТОГО:</b> <code>{data['итого']} {currency}</code>")
-        rub = to_rub(data['итого'])
+        rub = to_rub(data["итого"])
         if rub:
             rub_str = f"{rub:,.2f}".replace(",", " ")
             parts.append(f"   ~ <code>{rub_str} ₽</code>")
-    
+
     return "\n".join(parts)

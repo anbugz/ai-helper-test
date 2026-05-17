@@ -156,39 +156,73 @@ def parse_tnved_tariff(tariff_str: str) -> dict:
     def _f(s: str) -> float:
         return float(s.replace(",", "."))
 
-    # "X%, но не менее Y EUR за 1 кг"
-    m = re.match(r"([\d.,]+)%\s*,\s*но не менее\s+([\d.,]+)\s+EUR\s+за\s+1\s+(\S+)", s)
+    m = re.match(
+        r"([\d.,]+)%\s*,\s*но не менее\s+([\d.,]+)\s+(EUR|евро)\s+(?:за\s+)?(?:1\s+)?(\S+)",
+        s,
+        re.IGNORECASE,
+    )
     if m:
-        result.update({"type": "min", "percent": _f(m.group(1)), "eur_value": _f(m.group(2)),
-                       "unit": m.group(3), "formula": f"{_f(m.group(1))}%, минимум {_f(m.group(2))} EUR/{m.group(3)}"})
+        result.update(
+            {
+                "type": "min",
+                "percent": _f(m.group(1)),
+                "eur_value": _f(m.group(2)),
+                "unit": m.group(4),
+                "formula": f"{_f(m.group(1))}%, минимум {_f(m.group(2))} EUR/{m.group(4)}",
+            }
+        )
         return result
 
-    # "X% плюс Y EUR за 1 кг"
-    m = re.match(r"([\d.,]+)%\s*плюс\s+([\d.,]+)\s+EUR\s+за\s+1\s+(\S+)", s)
+    m = re.match(
+        r"([\d.,]+)%\s*плюс\s+([\d.,]+)\s+(EUR|евро)\s+(?:за\s+)?(?:1\s+)?(\S+)",
+        s,
+        re.IGNORECASE,
+    )
     if m:
-        result.update({"type": "plus", "percent": _f(m.group(1)), "eur_value": _f(m.group(2)),
-                       "unit": m.group(3), "formula": f"{_f(m.group(1))}% + {_f(m.group(2))} EUR/{m.group(3)}"})
+        result.update(
+            {
+                "type": "plus",
+                "percent": _f(m.group(1)),
+                "eur_value": _f(m.group(2)),
+                "unit": m.group(4),
+                "formula": f"{_f(m.group(1))}% + {_f(m.group(2))} EUR/{m.group(4)}",
+            }
+        )
         return result
 
-    # "X EUR за 1 кг"
-    m = re.match(r"([\d.,]+)\s+EUR\s+за\s+1\s+(\S+)", s)
+    m = re.match(r"([\d.,]+)\s+(EUR|евро)\s+(?:за\s+)?(?:1\s+)?(\S+)", s, re.IGNORECASE)
     if m:
-        result.update({"type": "fixed_eur", "eur_value": _f(m.group(1)),
-                       "unit": m.group(2), "formula": f"{_f(m.group(1))} EUR/{m.group(2)}"})
+        result.update(
+            {
+                "type": "fixed_eur",
+                "eur_value": _f(m.group(1)),
+                "unit": m.group(3),
+                "formula": f"{_f(m.group(1))} EUR/{m.group(3)}",
+            }
+        )
         return result
 
-    # "X USD за 1 т"
     m = re.match(r"([\d.,]+)\s+USD\s+за\s+1\s+(\S+)", s)
     if m:
-        result.update({"type": "fixed_usd", "usd_value": _f(m.group(1)),
-                       "unit": m.group(2), "formula": f"{_f(m.group(1))} USD/{m.group(2)}"})
+        result.update(
+            {
+                "type": "fixed_usd",
+                "usd_value": _f(m.group(1)),
+                "unit": m.group(2),
+                "formula": f"{_f(m.group(1))} USD/{m.group(2)}",
+            }
+        )
         return result
 
-    # "X%"
     m = re.match(r"([\d.,]+)%", s)
     if m:
-        result.update({"type": "percent", "percent": _f(m.group(1)),
-                       "formula": f"{_f(m.group(1))}%"})
+        result.update(
+            {
+                "type": "percent",
+                "percent": _f(m.group(1)),
+                "formula": f"{_f(m.group(1))}%",
+            }
+        )
         return result
 
     return result
@@ -203,8 +237,14 @@ def search_tnved_in_rows(rows: List[List[str]], code: str) -> Optional[dict]:
         if not row or not isinstance(row[0], str):
             continue
         row_code = row[0].replace(" ", "").replace(".", "").strip()
-        if row_code == search_code or (len(search_code) >= 6 and row_code.startswith(search_code)):
+        if row_code == search_code or (
+            len(search_code) >= 6 and row_code.startswith(search_code)
+        ):
             tariff = row[2] if len(row) > 2 else ""
-            return {"code": row[0], "name": row[1] if len(row) > 1 else "",
-                    "tariff": tariff, "parsed_tariff": parse_tnved_tariff(tariff)}
+            return {
+                "code": row[0],
+                "name": row[1] if len(row) > 1 else "",
+                "tariff": tariff,
+                "parsed_tariff": parse_tnved_tariff(tariff),
+            }
     return None

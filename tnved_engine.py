@@ -34,12 +34,14 @@ def load_tnved_rows(rows: List[List[str]], persist: bool = True) -> None:
     _build_tnved_index(_TNVED_ROWS_CACHE)
     logger.info(f"TNVED кэш: {len(_TNVED_ROWS_CACHE)} строк, {len(_TNVED_INDEX)} кодов")
     if persist:
-        parsed_rows = [parse_tnved_tariff(row[2] if len(row) > 2 else "") for row in _TNVED_ROWS_CACHE]
+        parsed_rows = [
+            parse_tnved_tariff(row[2] if len(row) > 2 else "") for row in _TNVED_ROWS_CACHE
+        ]
         save_tnved_batch(_TNVED_ROWS_CACHE, parsed_rows)
 
 
 def restore_tnved_from_db() -> bool:
-    """Восстанавливает кэш ТН ВЭД из SQLite при старте бота. Возвращает True если данные есть."""
+    """Восстанавливает кэш ТН ВЭД из SQLite при старте бота."""
     global _TNVED_ROWS_CACHE
     rows = get_all_tnved_from_db()
     if not rows:
@@ -55,7 +57,6 @@ def get_tnved_from_cache(code: str) -> Optional[dict]:
     """Быстрый поиск кода ТН ВЭД: сначала память (O(1)), потом SQLite."""
     if not code:
         return None
-    # 1. Память — O(1)
     if _TNVED_INDEX:
         search_code = code.replace(" ", "").replace(".", "").strip()
         idx = _TNVED_INDEX.get(search_code)
@@ -65,7 +66,6 @@ def get_tnved_from_cache(code: str) -> Optional[dict]:
             for full_code, i in _TNVED_INDEX.items():
                 if full_code.startswith(search_code) and i < len(_TNVED_ROWS_CACHE):
                     return _row_to_tnved_dict(_TNVED_ROWS_CACHE[i])
-    # 2. SQLite — если в памяти нет (например после редеплоя без restore)
     return get_tnved_from_db(code)
 
 
@@ -99,14 +99,11 @@ def is_radio_electronics(code: str) -> bool:
         return False
     for pattern in RADIO_ELECTRONICS_CODES_SET:
         if len(pattern) <= 6:
-            # Короткий шаблон — проверяем начало (группа/подгруппа)
             if c.startswith(pattern):
                 return True
         else:
-            # Длинный шаблон — точное совпадение
             if c == pattern:
                 return True
-    # Кастомные коды из SQLite проверяются отдельно через get_custom_codes()
     return False
 
 
@@ -125,6 +122,7 @@ def extract_tnved_codes(text: str) -> List[str]:
 
 def calculate_customs_fee(value_rub: float) -> int:
     from config import CUSTOMS_FEE_RUB, RADIO_FEE
+
     for threshold, fee in sorted(CUSTOMS_FEE_RUB.items()):
         if value_rub <= threshold:
             return fee

@@ -9,28 +9,61 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from bot_instance import dp, bot
-from config import ADMIN_ID, LEARN_MODE, PENDING_CODE_UPDATE, RADIO_ELECTRONICS_CODES_SET, logger
+from config import (
+    ADMIN_ID,
+    LEARN_MODE,
+    PENDING_CODE_UPDATE,
+    RADIO_ELECTRONICS_CODES_SET,
+    RADIO_FEE,
+    CUSTOMS_FEE_RUB,
+    TNVED_FULL_NAMES,
+    logger,
+)
 from database import (
-    save_message, clear_history, save_correction, save_custom_codes,
-    get_knowledge, get_knowledge_by_topic, save_knowledge,
-    get_dialogs_for_export, create_logs_xlsx,
+    save_message,
+    clear_history,
+    save_correction,
+    save_custom_codes,
+    get_knowledge,
+    get_knowledge_by_topic,
+    save_knowledge,
+    get_dialogs_for_export,
+    create_logs_xlsx,
 )
 from parsers import parse_xlsx, parse_docx, parse_txt, _extract_codes_from_rows
 import tnved_engine
-from tnved_engine import load_tnved_rows, is_radio_electronics, extract_tnved_codes
+from tnved_engine import (
+    load_tnved_rows,
+    is_radio_electronics,
+    extract_tnved_codes,
+    get_tnved_from_cache,
+    calculate_customs_fee,
+)
 from calc_engine import _format_payments_box, _strip_deepseek_dup
 from utils import (
-    check_rate_limit, now_msk, detect_base_currency, get_cbr_rates,
-    format_cross_rates, build_messages, ask_deepseek, safe_send, parse_date_range,
+    check_rate_limit,
+    now_msk,
+    detect_base_currency,
+    get_cbr_rates,
+    format_cross_rates,
+    build_messages,
+    ask_deepseek,
+    safe_send,
+    parse_date_range,
+    extract_ts_components,
 )
 
+
+# ------------------------------------------------------------------
+# Команды
+# ------------------------------------------------------------------
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
         "<b>West Asia AI Helper</b> — помощник для менеджеров по ВЭД и логистике.\n\n"
         "Просто напиши вопрос — помогу с расчётами, сроками, маршрутами.\n\n"
-        "Если ответ неправильный — напиши «несогласен» или «неверно» на моё сообщение."
+        "Если ответ неправильный — ответь на моё сообщение словом «несогласен»."
     )
 
 @dp.message(Command("help"))
@@ -39,7 +72,7 @@ async def cmd_help(message: Message):
         "<b>Справка:</b>\n"
         "• Отправь текст с кодом ТН ВЭД — получишь расчёт.\n"
         "• Отправь .xlsx файл — извлеку данные.\n"
-        "• Напиши «несогласен» или «неверно» — запишешь замечание.\n"
+        "• Ответь «несогласен» на сообщение бота — запишешь замечание.\n"
         "• /clear — очистить историю.\n"
         "• /help — эта справка."
     )
@@ -82,8 +115,15 @@ async def cmd_learn(message: Message):
     if not topic:
         await message.answer("Использование: /learn <тема>")
         return
-    LEARN_MODE[message.from_user.id] = {"topic": topic, "content": "", "questions": [], "waiting_for": "content"}
-    await message.answer(f"📚 Режим обучения: {topic}\nПришли текст или файл. /done — выйти.")
+    LEARN_MODE[message.from_user.id] = {
+        "topic": topic,
+        "content": "",
+        "questions": [],
+        "waiting_for": "content",
+    }
+    await message.answer(
+        f"📚 Режим обучения: {topic}\nПришли текст или файл. /done — выйти."
+    )
 
 @dp.message(Command("done"))
 async def cmd_done(message: Message):
@@ -93,7 +133,9 @@ async def cmd_done(message: Message):
         return
     mode = LEARN_MODE.pop(uid)
     if mode["content"]:
-        save_knowledge(mode["topic"], mode["content"], "", message.from_user.username or str(uid))
+        save_knowledge(
+            mode["topic"], mode["content"], "", message.from_user.username or str(uid)
+        )
         await message.answer(f"✅ «{mode['topic']}» сохранено.")
     else:
         await message.answer("❌ Нет контента.")
@@ -107,13 +149,20 @@ async def cmd_updatecodes(message: Message):
     await message.answer("📥 Пришли .xlsx с кодами ТН ВЭД. Ожидание: 10 мин.")
 
 
+# ------------------------------------------------------------------
+# Документы
+# ------------------------------------------------------------------
+
 @dp.message(F.document)
 async def handle_document(message: Message):
     doc = message.document
     user_id = message.from_user.id
     file_name = (doc.file_name or "").lower()
 
-    if user_id in LEARN_MODE and LEARN_MODE[user_id].get("waiting_for") == "content":
+    if (
+        user_id in LEARN_MODE
+        and LEARN_MODE[user_id].get("waiting_for") == "content"
+    ):
         if not any(file_name.endswith(ext) for ext in [".txt", ".docx", ".xlsx"]):
             await message.answer("Только .txt, .docx, .xlsx")
             return
@@ -157,10 +206,18 @@ async def handle_document(message: Message):
             await message.answer("Не прочитал.")
             return
 
-        has_tnved = any(isinstance(r[0], str) and re.match(r"\d{10}", r[0].replace(" ", "")) for r in data if r)
-        if has_tnved:
+        has_tnved = any(
+            isinstance(r[0], str)
+            and re.match(r"\d{10}", r[0].replace(" ", ""))
+            for r in data
+            if r
+        )
+
+        if has_tnved and (is_code_update or user_id == ADMIN_ID):
             load_tnved_rows(data)
-            await message.answer(f"📋 Загружено: {len(tnved_engine._TNVED_ROWS_CACHE)} кодов")
+            await message.answer(
+                f"📋 Загружено: {len(tnved_engine._TNVED_ROWS_CACHE)} кодов"
+            )
 
         if is_code_update:
             codes = _extract_codes_from_rows(data)
@@ -168,17 +225,25 @@ async def handle_document(message: Message):
                 await message.answer("❌ Коды не найдены.")
                 return
             save_custom_codes(codes)
-            await message.answer(f"✅ {len(codes)} кодов. Примеры: {', '.join(codes[:5])}")
+            await message.answer(
+                f"✅ {len(codes)} кодов. Примеры: {', '.join(codes[:5])}"
+            )
             return
 
         lines = ["<b>Excel:</b>"]
-        for i, row in enumerate([r for r in data if r and any(str(c).strip() for c in r)][:15], 1):
+        for i, row in enumerate(
+            [r for r in data if r and any(str(c).strip() for c in r)][:15], 1
+        ):
             lines.append(f"{i}. {' | '.join(str(c)[:40] for c in row[:4])}")
         await safe_send(message, "\n".join(lines))
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await message.answer(f"Ошибка: {e}")
 
+
+# ------------------------------------------------------------------
+# Текст
+# ------------------------------------------------------------------
 
 @dp.message(F.text)
 async def handle_text(message: Message):
@@ -187,8 +252,12 @@ async def handle_text(message: Message):
     if not user_text or user_text.startswith("/"):
         return
 
-    # Логи (только АБ)
-    if user_id == ADMIN_ID and any(k in user_text.lower() for k in ["логи", "выгрузи", "экспорт"]):
+    text_lower = user_text.lower()
+
+    log_keywords = ["логи", "выгрузи логи", "экспорт логов", "логи работы"]
+    if user_id == ADMIN_ID and any(
+        text_lower.startswith(k) or f" {k} " in f" {text_lower} " for k in log_keywords
+    ):
         df, dt = parse_date_range(user_text)
         logs = get_dialogs_for_export(df, dt)
         if not logs:
@@ -196,22 +265,40 @@ async def handle_text(message: Message):
             return
         xb = create_logs_xlsx(logs, "logs")
         fn = f"logs_{df or 'all'}_{dt or 'all'}.xlsx"
-        await message.answer_document(document=types.BufferedInputFile(xb, filename=fn), caption=f"📊 {len(logs)} записей")
+        await message.answer_document(
+            document=types.BufferedInputFile(xb, filename=fn),
+            caption=f"📊 {len(logs)} записей",
+        )
         return
 
-    # Несогласен
-    if any(k in user_text.lower() for k in ["несогласен", "не согласен", "неправильно", "неверно"]):
-        orig = message.reply_to_message.text if message.reply_to_message else ""
-        save_correction(user_id, message.from_user.username or "", orig[:500], user_text[:500])
+    if any(
+        k in text_lower for k in ["несогласен", "не согласен", "неправильно", "неверно"]
+    ):
+        if not message.reply_to_message:
+            await message.answer(
+                "Для записи замечания ответьте на сообщение бота словом «несогласен»."
+            )
+            return
+        orig = message.reply_to_message.text or ""
+        save_correction(
+            user_id,
+            message.from_user.username or "",
+            orig[:500],
+            user_text[:500],
+        )
         if ADMIN_ID:
             try:
-                await bot.send_message(ADMIN_ID, f"⚠️ @{message.from_user.username or user_id}: {user_text[:200]}")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ @{message.from_user.username or user_id}: {user_text[:200]}",
+                )
             except Exception as e:
                 logger.error(f"Не удалось уведомить: {e}")
         await message.answer("⚠️ Замечание записано.")
         return
 
     if user_id in LEARN_MODE:
+        LEARN_MODE[user_id]["content"] += "\n" + user_text
         await message.answer("✅ Записано.")
         return
 
@@ -223,41 +310,60 @@ async def handle_text(message: Message):
 
     codes = extract_tnved_codes(user_text)
     radio_detected = any(is_radio_electronics(c) for c in codes)
-    from database import get_tnved_from_db as _gtd
 
-    # Сначала ищем коды
     found_codes = []
     missing = []
     if codes:
         for c in codes[:3]:
-            info = _gtd(c)
+            info = get_tnved_from_cache(c)
             if info:
                 found_codes.append(info)
             else:
                 missing.append(c)
 
-    calc_words = ("инвойс", "сумма", "стоимость", "расчёт", "платеж", "пошлина",
-                  "ндс", "сбор", "таможенная", "тс", "фрахт", "страховк",
-                  "посчитай", "сколько будет", "узнать плат", "сколько плат")
-    # Если есть код и число больше 1000 — считаем расчётным запросом
-    has_amount = bool(re.search(r"\d{3,}", user_text))
-    is_calc = any(w in user_text.lower() for w in calc_words) or (bool(found_codes) and has_amount)
+    calc_words = (
+        "инвойс",
+        "сумма",
+        "стоимость",
+        "расчёт",
+        "платеж",
+        "пошлина",
+        "ндс",
+        "сбор",
+        "таможенная",
+        "тс",
+        "фрахт",
+        "страховк",
+        "посчитай",
+        "сколько будет",
+        "узнать плат",
+        "сколько плат",
+    )
+    text_no_codes = re.sub(r"\d{8,10}", "", user_text)
+    has_amount = bool(re.search(r"\d{3,}", text_no_codes))
+    is_calc = any(w in text_lower for w in calc_words) or (
+        bool(found_codes) and has_amount
+    )
 
-    # === БЫСТРЫЙ ОТВЕТ: только код, без расчёта ===
     if codes and found_codes and not is_calc:
         info = found_codes[0]
         pt = info["parsed_tariff"]
-        # Тип пошлины
         if pt.get("type") in ("min", "plus", "fixed_eur"):
             duty_type = f"комбинированная ({pt['formula']})"
         elif pt.get("type") == "percent":
             duty_type = "адвалорная"
         else:
-            duty_type = info['tariff']
-        # НДС
-        vat = "10%" if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")) else "22%"
-        # Радио
-        radio = "\n⚡ Сбор 73 860 ₽" if any(is_radio_electronics(c) for c in codes) else ""
+            duty_type = info["tariff"]
+        vat = (
+            "10%"
+            if any(w in info["name"].lower() for w in ("пищев", "детск", "медиц", "книг", "печат"))
+            else "22%"
+        )
+        radio = (
+            "\n⚡ Сбор 73 860 ₽"
+            if any(is_radio_electronics(c) for c in codes)
+            else ""
+        )
         await message.answer(
             f"📋 <code>{info['code']}</code>\n"
             f"🔧 {info['name']}\n"
@@ -269,18 +375,21 @@ async def handle_text(message: Message):
         return
 
     if codes and not found_codes:
-        await safe_send(message, f"❌ Код не найден: <code>{', '.join(missing)}</code>")
+        await safe_send(
+            message, f"❌ Код не найден: <code>{', '.join(missing)}</code>"
+        )
         return
 
     base_cur = detect_base_currency(user_text)
-    has_ins = any(w in user_text.lower() for w in ("страховка", "страхование"))
+    has_ins = any(w in text_lower for w in ("страховка", "страхование"))
 
     rates = None
     try:
         rates = await get_cbr_rates()
         cr = format_cross_rates(rates)
         extra = (
-            f"[КУРСЫ ЦБ РФ {rates.get('DATE','')}] CNY={rates.get('CNY','')}₽ USD={rates.get('USD','')}₽ EUR={rates.get('EUR','')}₽. "
+            f"[КУРСЫ ЦБ РФ {rates.get('DATE','')}] CNY={rates.get('CNY','')}₽ "
+            f"USD={rates.get('USD','')}₽ EUR={rates.get('EUR','')}₽. "
             f"Кросс: {cr}. Валюта: {base_cur}. НДС: 22%/10%. "
         )
         extra += (
@@ -295,68 +404,104 @@ async def handle_text(message: Message):
         logger.error(f"Курсы: {e}")
         extra = "[КУРСЫ ЦБ недоступны]. НДС: 22%/10%."
 
+    comps = extract_ts_components(user_text)
+    ts_fallback = sum(v for v in comps.values() if v) if comps else None
+
+    vat_rate = 0.22
+    customs_fee_rub = 0.0
+    ti = found_codes[0] if found_codes else None
+
+    if ti:
+        vat_rate = (
+            0.10
+            if any(
+                w in ti["name"].lower()
+                for w in ("пищев", "детск", "медиц", "книг", "печат")
+            )
+            else 0.22
+        )
+
+        ts_rub_for_fee = 0.0
+        if ts_fallback and rates:
+            if base_cur == "RUB":
+                ts_rub_for_fee = ts_fallback
+            elif base_cur in rates:
+                try:
+                    ts_rub_for_fee = ts_fallback * float(rates[base_cur])
+                except (ValueError, TypeError):
+                    pass
+
+        if radio_detected:
+            customs_fee_rub = RADIO_FEE
+        else:
+            customs_fee_rub = calculate_customs_fee(ts_rub_for_fee)
+
     msgs = build_messages(user_id, user_text, extra_context=extra)
     answer = await ask_deepseek(msgs)
 
-    # === ВЫРЕЗАЕМ дубли от DeepSeek (шапка + блок Платежи) ===
     answer = _strip_deepseek_dup(answer)
 
-    # === ШАПКА (одна, сверху) ===
     header = ""
     if found_codes:
         info = found_codes[0]
         pt = info["parsed_tariff"]
         header = f"📋 <b>Код:</b> <code>{info['code']}</code>\n"
-        name_clean = re.sub(r'\s*\(за исключением[^)]+\)', '', info['name']).strip()
-        header += f"🔧 {name_clean}\n"
+        name_clean = re.sub(r"\s*\(за исключением[^)]+", "", info["name"]).strip()
+        full_name = TNVED_FULL_NAMES.get(info["code"][:6], name_clean)
+        header += f"🔧 {full_name}\n"
         header += f"💰 <b>Пошлина:</b> {info['tariff']}"
         if pt.get("type") in ("min", "plus", "fixed_eur"):
             header += f" — комбинированная ({pt['formula']})"
         elif pt.get("type") == "percent":
             header += " — адвалорная"
         header += "\n"
-        vat = "10% (льготная)" if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")) else "22% (базовая)"
-        header += f"🧾 <b>НДС:</b> {vat}\n"
-        if any(is_radio_electronics(c) for c in codes):
+        vat_str = (
+            "10% (льготная)"
+            if vat_rate == 0.10
+            else "22% (базовая)"
+        )
+        header += f"🧾 <b>НДС:</b> {vat_str}\n"
+        if radio_detected:
             header += "⚡ <b>Радиоэлектроника:</b> сбор 73 860 ₽\n"
         if missing:
             header += f"⚠️ Не найдены: {', '.join(missing)}\n"
 
-    # === ТАБЛИЦА ПЛАТЕЖЕЙ (одна, без ТС) ===
-    if is_calc and base_cur != "RUB":
-        ti = found_codes[0] if found_codes else None
-        box = _format_payments_box(answer, base_cur, rates, tariff_info=ti, is_radio=radio_detected)
+    if is_calc and base_cur:
+        box = _format_payments_box(
+            answer,
+            base_cur,
+            rates,
+            tariff_info=ti,
+            is_radio=radio_detected,
+            customs_fee_rub=customs_fee_rub,
+            vat_rate=vat_rate,
+            ts_fallback=ts_fallback,
+        )
         if box:
             answer += box
 
-    # Курс ЦБ уже в таблице — отдельная сноска не нужна
-    if rates and base_cur != "RUB":
-        rate = rates.get(base_cur, "")
-        if rate and rate != "н/д" and rate not in answer and "курсу ЦБ" not in answer:
-            answer += f"\n\nℹ️ <i>Курс ЦБ РФ на {rates.get('DATE','сегодня')}: 1 {base_cur} = {rate} ₽</i>"
-
-    # НДС fallback
     if not any(k in answer.lower() for k in ("ндс", "налог на добавленную")):
-        if any(w in user_text.lower() for w in ("расчёт", "пошлина", "сбор", "ндс")):
+        if any(
+            w in text_lower for w in ("расчёт", "пошлина", "сбор", "ндс")
+        ):
             answer += "\n\n<i>НДС: 22% базовая, 10% льготная.</i>"
 
-    # Склеиваем
     if header:
         answer = header + "\n" + answer
-
-    if radio_detected and "⚡" not in answer and "73860" not in answer:
-        answer = "⚡ <b>РАДИОЭЛЕКТРОНИКА: сбор 73 860 ₽</b> (Приложение №1)\n\n" + answer
 
     if found_codes and "декларант" not in answer.lower():
         answer += "\n\n📌 <i>Точную информацию уточняйте у декларанта.</i>"
 
-    # Курс ЦБ РФ — всегда в конце
     try:
         rates = await get_cbr_rates()
-        cny = rates.get('CNY', 'н/д')
-        usd = rates.get('USD', 'н/д')
-        date = rates.get('DATE', 'сегодня')
-        answer += f"\n\n💱 <i>Курс ЦБ РФ на {date}: 1 USD = {usd} ₽, 1 CNY = {cny} ₽</i>"
+        cny = rates.get("CNY", "н/д")
+        usd = rates.get("USD", "н/д")
+        eur = rates.get("EUR", "н/д")
+        date = rates.get("DATE", "сегодня")
+        answer += (
+            f"\n\n💱 <i>Курс ЦБ РФ на {date}: "
+            f"1 USD = {usd} ₽, 1 CNY = {cny} ₽, 1 EUR = {eur} ₽</i>"
+        )
     except Exception:
         pass
 
