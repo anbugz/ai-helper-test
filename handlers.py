@@ -3,7 +3,7 @@ handlers.py — все хэндлеры aiogram.
 """
 import asyncio
 import re
-from datetime import datetime, timedelta
+from datetime import timedelta
 from aiogram import types, F
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -17,7 +17,7 @@ from database import (
 )
 from parsers import parse_xlsx, parse_docx, parse_txt, _extract_codes_from_rows
 import tnved_engine
-from tnved_engine import load_tnved_rows, get_tnved_from_cache, is_radio_electronics, extract_tnved_codes
+from tnved_engine import load_tnved_rows, is_radio_electronics, extract_tnved_codes
 from utils import (
     check_rate_limit, now_msk, detect_base_currency, get_cbr_rates,
     format_cross_rates, build_messages, ask_deepseek, safe_send, parse_date_range,
@@ -467,7 +467,7 @@ async def handle_text(message: Message):
     if radio_detected and "⚡" not in answer and "73860" not in answer:
         answer = "⚡ <b>РАДИОЭЛЕКТРОНИКА: сбор 73 860 ₽</b> (Приложение №1)\n\n" + answer
 
-    if "декларант" not in answer.lower():
+    if found_codes and "декларант" not in answer.lower():
         answer += "\n\n📌 <i>Точную информацию уточняйте у декларанта.</i>"
 
     # Курс ЦБ РФ — всегда в конце

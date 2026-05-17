@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from io import BytesIO
-from config import DB_PATH, logger, VERSION
+from config import DB_PATH, logger
 
 # ------------------------------------------------------------------
 # Инициализация
