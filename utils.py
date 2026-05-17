@@ -72,7 +72,6 @@ def extract_ts_components(text: str) -> Dict[str, float]:
     Если ключевых слов нет — первое число >= 1000 считаем инвойсом."""
     res: Dict[str, float] = {}
     text_lower = text.lower()
-    # Убираем коды ТН ВЭД, чтобы не путать с суммами
     text_clean = re.sub(r"\d{8,10}", "", text_lower)
 
     m = re.search(
@@ -90,13 +89,70 @@ def extract_ts_components(text: str) -> Dict[str, float]:
     if m:
         res["insurance"] = _parse_num(m.group(1))
 
-    # Fallback: если ничего не нашли, берём первое число >= 1000
-    if not res:
+    # Fallback invoice: если инвойс не найден явно, берём первое число >= 1000
+    if "invoice" not in res:
         m = re.search(r"(\d[\d\s,.]{2,})(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?", text_clean)
         if m:
             val = _parse_num(m.group(1))
             if val >= 1000:
                 res["invoice"] = val
+
+    return res
+
+
+def _detect_currency_near(text: str, pos: int) -> str:
+    """Определяет валюту по контексту рядом с позицией числа."""
+    snippet = text[pos:pos + 15].lower()
+    if any(x in snippet for x in ("ю", "юань", "юаней", "китайск", "rmb", "¥", "cny")):
+        return "CNY"
+    if any(x in snippet for x in ("доллар", "usd", "бакс", "$", "greenback")):
+        return "USD"
+    if any(x in snippet for x in ("евро", "eur", "€")):
+        return "EUR"
+    if any(x in snippet for x in ("руб", "₽", "р.", "rub")):
+        return "RUB"
+    return "RUB"
+
+
+def extract_ts_components_with_currency(text: str) -> Dict[str, Dict[str, any]]:
+    """Извлекает компоненты ТС с валютами.
+    Возвращает: {"invoice": {"value": 100000.0, "currency": "CNY"}, ...}"""
+    res: Dict[str, Dict[str, any]] = {}
+    text_lower = text.lower()
+    text_clean = re.sub(r"\d{8,10}", "", text_lower)
+
+    # Инвойс
+    m = re.search(
+        r"(?:инвойс|сумма|стоимость|цена)[^\d]*(\d[\d\s,.]+)(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?",
+        text_clean,
+    )
+    if m:
+        val = _parse_num(m.group(1))
+        cur = _detect_currency_near(text_clean, m.end())
+        res["invoice"] = {"value": val, "currency": cur}
+
+    # Фрахт
+    m = re.search(r"(?:фрахт|доставка|перевозка)[^\d]*(\d[\d\s,.]+)", text_clean)
+    if m:
+        val = _parse_num(m.group(1))
+        cur = _detect_currency_near(text_clean, m.end())
+        res["freight"] = {"value": val, "currency": cur}
+
+    # Страховка
+    m = re.search(r"(?:страховка|страхование)[^\d]*(\d[\d\s,.]+)", text_clean)
+    if m:
+        val = _parse_num(m.group(1))
+        cur = _detect_currency_near(text_clean, m.end())
+        res["insurance"] = {"value": val, "currency": cur}
+
+    # Fallback invoice
+    if "invoice" not in res:
+        m = re.search(r"(\d[\d\s,.]{2,})(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?", text_clean)
+        if m:
+            val = _parse_num(m.group(1))
+            if val >= 1000:
+                cur = _detect_currency_near(text_clean, m.end())
+                res["invoice"] = {"value": val, "currency": cur}
 
     return res
 
