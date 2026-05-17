@@ -193,6 +193,23 @@ def save_tnved_batch(rows: List[List], parsed_rows: List[Dict]) -> None:
     logger.info(f"TNVED кэш: сохранено {len(rows)} кодов в БД")
 
 
+def restore_tnved_from_db() -> None:
+    """Восстанавливает TNVED кэш из SQLite при старте бота."""
+    try:
+        import tnved_engine
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT code, name, tariff, parsed_type, parsed_formula FROM tnved_cache")
+        rows = c.fetchall()
+        conn.close()
+        if rows:
+            tnved_engine._TNVED_ROWS_CACHE = [[r[0], r[1], r[2]] for r in rows]
+            tnved_engine._build_tnved_index(tnved_engine._TNVED_ROWS_CACHE)
+            logger.info(f"TNVED кэш восстановлен из БД: {len(rows)} строк")
+    except Exception as e:
+        logger.warning(f"TNVED cache restore skipped: {e}")
+
+
 def get_tnved_from_db(code: str) -> Optional[Dict]:
     """Поиск кода ТН ВЭД: точное совпадение → LIKE → 6-digit prefix."""
     conn = sqlite3.connect(DB_PATH)
