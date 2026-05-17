@@ -437,12 +437,43 @@ def _escape_xml(text: str) -> str:
 
 
 def create_logs_xlsx(rows: List[Tuple], sheet_name: str = "logs") -> bytes:
-    """Генерирует минимально валидный .xlsx через zipfile + ручной XML.
+    """Генерирует .xlsx через sharedStrings.xml (стандартный формат Excel).
     Совместимость: Excel, LibreOffice, Google Sheets.
     """
     import zipfile
 
     ct_ns = "http://schemas.openxmlformats.org/package/2006/content-types"
+
+    # Собираем уникальные строки
+    strings: List[str] = []
+    str_index: Dict[str, int] = {}
+
+    def add_str(s: str) -> int:
+        s = str(s) if s is not None else ""
+        if s not in str_index:
+            str_index[s] = len(strings)
+            strings.append(s)
+        return str_index[s]
+
+    # Заголовки
+    headers = ["user_id", "username", "role", "content", "created_at"]
+    header_indices = [add_str(h) for h in headers]
+
+    # Данные
+    data_indices: List[List[int]] = []
+    for row in rows:
+        data_indices.append([add_str(v) for v in row])
+
+    # --- sharedStrings.xml ---
+    ss_parts = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n',
+        '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        f'count="{len(strings)}" uniqueCount="{len(strings)}">\n',
+    ]
+    for s in strings:
+        ss_parts.append(f'  <si><t xml:space="preserve">{_escape_xml(s)}</t></si>\n')
+    ss_parts.append('</sst>')
+    ss_xml = "".join(ss_parts).encode("utf-8")
 
     # --- workbook.xml ---
     wb_xml = (
@@ -457,7 +488,7 @@ def create_logs_xlsx(rows: List[Tuple], sheet_name: str = "logs") -> bytes:
     ).encode("utf-8")
 
     # --- worksheet.xml ---
-    max_col = 4  # A-E (0-4)
+    max_col = 4
     max_row = len(rows) + 1
     ws_parts = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n',
@@ -467,31 +498,31 @@ def create_logs_xlsx(rows: List[Tuple], sheet_name: str = "logs") -> bytes:
     ]
     # Заголовок
     ws_parts.append('    <row r="1">\n')
-    headers = ["user_id", "username", "role", "content", "created_at"]
-    for c_idx, h in enumerate(headers):
+    for c_idx, si in enumerate(header_indices):
         cell_ref = f"{_col_letter(c_idx)}1"
-        ws_parts.append(f'      <c r="{cell_ref}" t="inlineStr"><is><t>{_escape_xml(h)}</t></is></c>\n')
+        ws_parts.append(f'      <c r="{cell_ref}" t="s"><v>{si}</v></c>\n')
     ws_parts.append('    </row>\n')
-    # Данные — все ячейки как inlineStr (текст)
-    for r_idx, row in enumerate(rows, 2):
+    # Данные
+    for r_idx, row_indices in enumerate(data_indices, 2):
         ws_parts.append(f'    <row r="{r_idx}">\n')
-        for c_idx, value in enumerate(row):
+        for c_idx, si in enumerate(row_indices):
             cell_ref = f"{_col_letter(c_idx)}{r_idx}"
-            safe_val = str(value) if value is not None else ""
-            ws_parts.append(f'      <c r="{cell_ref}" t="inlineStr"><is><t>{_escape_xml(safe_val)}</t></is></c>\n')
+            ws_parts.append(f'      <c r="{cell_ref}" t="s"><v>{si}</v></c>\n')
         ws_parts.append('    </row>\n')
     ws_parts.append('  </sheetData>\n')
-    ws_parts.append('  <sheetViews><sheetView tabSelected="1" workbookViewId="0"/></sheetViews>\n')
     ws_parts.append('</worksheet>')
     ws_xml = "".join(ws_parts).encode("utf-8")
 
-    # --- relationships ---
-    rels_xml = (
+    # --- workbook.xml.rels ---
+    wb_rels_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
         '  <Relationship Id="rId1" '
         'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
         'Target="worksheets/sheet1.xml"/>\n'
+        '  <Relationship Id="rId2" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" '
+        'Target="sharedStrings.xml"/>\n'
         '</Relationships>'
     ).encode("utf-8")
 
@@ -505,6 +536,8 @@ def create_logs_xlsx(rows: List[Tuple], sheet_name: str = "logs") -> bytes:
         'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>\n'
         '  <Override PartName="/xl/worksheets/sheet1.xml" '
         'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\n'
+        '  <Override PartName="/xl/sharedStrings.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>\n'
         '</Types>'
     ).encode("utf-8")
 
@@ -523,8 +556,9 @@ def create_logs_xlsx(rows: List[Tuple], sheet_name: str = "logs") -> bytes:
     with zipfile.ZipFile(xlsx_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml", ct_xml)
         zf.writestr("_rels/.rels", root_rels)
-        zf.writestr("xl/_rels/workbook.xml.rels", rels_xml)
+        zf.writestr("xl/_rels/workbook.xml.rels", wb_rels_xml)
         zf.writestr("xl/workbook.xml", wb_xml)
         zf.writestr("xl/worksheets/sheet1.xml", ws_xml)
+        zf.writestr("xl/sharedStrings.xml", ss_xml)
 
     return xlsx_buffer.getvalue()
