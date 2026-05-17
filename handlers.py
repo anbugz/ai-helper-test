@@ -39,7 +39,7 @@ from tnved_engine import (
     get_tnved_from_cache,
     calculate_customs_fee,
 )
-from calc_engine import _format_payments_box, _strip_deepseek_dup
+from calc_engine import _format_calculation_fallback, _strip_deepseek_dup
 from utils import (
     check_rate_limit,
     now_msk,
@@ -441,6 +441,7 @@ async def handle_text(message: Message):
 
     answer = _strip_deepseek_dup(answer)
 
+    # --- ШАПКА (одна, сверху) ------------------------------------
     header = ""
     if found_codes:
         info = found_codes[0]
@@ -466,32 +467,31 @@ async def handle_text(message: Message):
         if missing:
             header += f"⚠️ Не найдены: {', '.join(missing)}\n"
 
-    if is_calc and base_cur:
-        box = _format_payments_box(
-            answer,
-            base_cur,
-            rates,
+    # --- Fallback расчёт (если DeepSeek не вывёл полный) ---------
+    has_deepseek_calc = any(
+        k in answer.lower()
+        for k in ("итого платежей", "итоговый расчёт", "итоговый расчет", "📊 итоговый")
+    )
+    if is_calc and base_cur and not has_deepseek_calc:
+        fallback = _format_calculation_fallback(
+            code=info["code"] if found_codes else None,
+            name=TNVED_FULL_NAMES.get(info["code"][:6], info["name"]) if found_codes else None,
+            currency=base_cur,
+            rates=rates or {},
             tariff_info=ti,
             is_radio=radio_detected,
             customs_fee_rub=customs_fee_rub,
             vat_rate=vat_rate,
             ts_fallback=ts_fallback,
         )
-        if box:
-            answer += box
+        if fallback:
+            answer += "\n\n" + fallback
 
-    if not any(k in answer.lower() for k in ("ндс", "налог на добавленную")):
-        if any(
-            w in text_lower for w in ("расчёт", "пошлина", "сбор", "ндс")
-        ):
-            answer += "\n\n<i>НДС: 22% базовая, 10% льготная.</i>"
-
-    if header:
-        answer = header + "\n" + answer
-
+    # --- Декларант (если ещё не добавлен) ------------------------
     if found_codes and "декларант" not in answer.lower():
         answer += "\n\n📌 <i>Точную информацию уточняйте у декларанта.</i>"
 
+    # --- Курс ЦБ РФ (единый финальный блок) ----------------------
     try:
         rates = await get_cbr_rates()
         cny = rates.get("CNY", "н/д")
@@ -504,6 +504,10 @@ async def handle_text(message: Message):
         )
     except Exception:
         pass
+
+    # Склеиваем шапку
+    if header:
+        answer = header + "\n" + answer
 
     save_message(user_id, message.from_user.username or "", "assistant", answer)
     await safe_send(message, answer)
