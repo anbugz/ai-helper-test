@@ -1,6 +1,5 @@
 """
 handlers.py — все хэндлеры aiogram.
-БЕЗ tnved_fetcher. Только Excel. Одна база.
 """
 import asyncio
 import re
@@ -13,20 +12,17 @@ from bot_instance import dp, bot
 from config import ADMIN_ID, LEARN_MODE, PENDING_CODE_UPDATE, RADIO_ELECTRONICS_CODES_SET, logger
 from database import (
     save_message, clear_history, save_correction, save_custom_codes,
-    get_knowledge, save_knowledge, get_dialogs_for_export, create_logs_xlsx,
+    get_knowledge, get_knowledge_by_topic, save_knowledge,
+    get_dialogs_for_export, create_logs_xlsx,
 )
 from parsers import parse_xlsx, parse_docx, parse_txt, _extract_codes_from_rows
 import tnved_engine
-from tnved_engine import load_tnved_rows, is_radio_electronics, extract_tnved_codes
+from tnved_engine import load_tnved_rows, get_tnved_from_cache, is_radio_electronics, extract_tnved_codes
 from utils import (
     check_rate_limit, now_msk, detect_base_currency, get_cbr_rates,
     format_cross_rates, build_messages, ask_deepseek, safe_send, parse_date_range,
 )
 
-
-# ------------------------------------------------------------------
-# Команды
-# ------------------------------------------------------------------
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -42,10 +38,9 @@ async def cmd_help(message: Message):
         "<b>Справка:</b>\n"
         "• Отправь текст с кодом ТН ВЭД — получишь расчёт.\n"
         "• Отправь .xlsx файл — извлеку данные.\n"
-        "• Напиши «несогласен» — запишешь замечание.\n"
+        "• Напиши «несогласен» или «неверно» — запишешь замечание.\n"
         "• /clear — очистить историю.\n"
-        "• /help — эта справка.\n\n"
-        "<i>Обновляйте Excel с кодами раз в месяц через /updatecodes</i>"
+        "• /help — эта справка."
     )
 
 @dp.message(Command("clear"))
@@ -62,8 +57,7 @@ async def cmd_brief(message: Message):
         "<b>BRIEF</b>\n"
         "НДС: 22% базовая, 10% льготная.\n"
         "Сбор: шкала ПП РФ №1637. Радио: 73 860 ₽.\n"
-        "Валюта: инвойс. Страховка: в ТС.\n"
-        "<i>Обновляйте коды ТН ВЭД раз в месяц.</i>"
+        "Валюта: инвойс. Страховка: в ТС."
     )
 
 @dp.message(Command("topics"))
@@ -109,18 +103,8 @@ async def cmd_updatecodes(message: Message):
         await message.answer("⛔ Нет доступа.")
         return
     PENDING_CODE_UPDATE[message.from_user.id] = now_msk()
-    await message.answer(
-        "📥 <b>Режим обновления кодов</b>\n\n"
-        "Пришли .xlsx файл с перечнем ТН ВЭД.\n"
-        "Я извлеку коды и обновлю базу.\n"
-        "<i>Рекомендуется обновлять раз в месяц.</i>\n\n"
-        "Ожидание: 10 мин."
-    )
+    await message.answer("📥 Пришли .xlsx с кодами ТН ВЭД. Ожидание: 10 мин.")
 
-
-# ------------------------------------------------------------------
-# Документы
-# ------------------------------------------------------------------
 
 @dp.message(F.document)
 async def handle_document(message: Message):
@@ -128,7 +112,6 @@ async def handle_document(message: Message):
     user_id = message.from_user.id
     file_name = (doc.file_name or "").lower()
 
-    # Режим обучения
     if user_id in LEARN_MODE and LEARN_MODE[user_id].get("waiting_for") == "content":
         if not any(file_name.endswith(ext) for ext in [".txt", ".docx", ".xlsx"]):
             await message.answer("Только .txt, .docx, .xlsx")
@@ -196,13 +179,52 @@ async def handle_document(message: Message):
         await message.answer(f"Ошибка: {e}")
 
 
-# ------------------------------------------------------------------
-# Таблица платежей
-# ------------------------------------------------------------------
+def _strip_deepseek_dup(answer: str) -> str:
+    """Вырезает дубли от DeepSeek: шапку с кодом и блок Платежи."""
+    lines = answer.split("\n")
+    
+    # === ШАГ 1: найти и вырезать блок "ПЛАТЕЖИ:" или "📊 Платежи:" ===
+    pay_start = -1
+    for i, line in enumerate(lines):
+        ls = line.strip().lower()
+        # Ловим любой вариант: "платежи:", "📊 платежи:", "**платежи**"
+        if ls in ("платежи:", "платежи") or ls.startswith("📊 платежи:") or ls.startswith("📊 **платежи**") or "**платежи**" in ls or "платежи в валюте" in ls:
+            pay_start = i
+            break
+    if pay_start >= 0:
+        lines = lines[:pay_start]
+    
+    # === ШАГ 2: найти и вырезать шапку с кодом (перед 📊 ТС) ===
+    tc_start = -1
+    for i, line in enumerate(lines):
+        if line.strip().startswith("📊 Таможенная стоимость:") or line.strip().startswith("📊 Таможенная стоим"):
+            tc_start = i
+            break
+    if tc_start > 0:
+        header_end = tc_start
+        has_header = False
+        for j in range(tc_start - 1, -1, -1):
+            ls = lines[j].strip()
+            if any(ls.startswith(k) for k in ("📋 Код:", "📋 **Код:**", "🔧", "💰", "🧾", "⚡")):
+                has_header = True
+                header_end = j
+            elif ls == "":
+                continue
+            else:
+                break
+        if has_header:
+            lines = lines[:header_end] + lines[tc_start:]
+    
+    return "\n".join(lines).strip()
 
-def _format_payments_box(answer: str, currency: str, rates: dict = None) -> str:
-    """Только Пошлина/НДС/Сбор/ИТОГО в рамке. Без ТС."""
+
+def _format_payments_box(answer: str, currency: str, rates: dict = None, tariff_info: dict = None, is_radio: bool = False) -> str:
+    """Только Пошлина/НДС/Сбор/ИТОГО в рамке. Без ТС. Если rates — добавляет рублевый эквивалент.
+    Если tariff_info — добавляет ставки в подписи (Пошлина 0%, НДС 22% и т.д.)."""
     import re
+    # Защита от дубля: если <pre> блок уже есть — не генерируем
+    if "<pre>" in answer:
+        return ""
     lines = answer.split("\n")
     data: dict = {}
     cur_pat = {"USD": r"USD|\\$", "EUR": r"EUR|€", "CNY": r"CNY|CNH|¥", "RUB": r"RUB|₽"}
@@ -229,24 +251,58 @@ def _format_payments_box(answer: str, currency: str, rates: dict = None) -> str:
                 break
     if "пошлина" not in data and "ндс" not in data:
         return ""
-    lw, vw = 10, 14
-    top = f"┌{'─'*(lw+2)}┬{'─'*(vw+2)}┐"
-    hdr = f"│ {'Платеж':<{lw}} │ {currency:>{vw}} │"
-    sep = f"├{'─'*(lw+2)}┼{'─'*(vw+2)}┤"
-    bot = f"└{'─'*(lw+2)}┴{'─'*(vw+2)}┘"
-    rows = []
+    # Формируем labels со ставками
+    labels = {
+        "пошлина": "Пошлина",
+        "ндс": "НДС",
+        "сбор": "Сбор",
+    }
+    if tariff_info:
+        pt = tariff_info.get("parsed_tariff", {})
+        tariff_str = tariff_info.get("tariff", "")
+        name = tariff_info.get("name", "").lower()
+        # Пошлина: ставка
+        if pt.get("type") == "percent":
+            labels["пошлина"] = f"Пошлина {tariff_str}"
+        elif pt.get("type") in ("min", "plus", "fixed_eur", "fixed_usd"):
+            labels["пошлина"] = f"Пошлина {tariff_str} ({pt.get('formula', '')})"
+        # НДС: 22% или 10%
+        if any(w in name for w in ("пищев", "детск", "медиц", "книг", "печат")):
+            labels["ндс"] = "НДС 10%"
+        else:
+            labels["ндс"] = "НДС 22%"
+        # Сбор: радио или шкала
+        if is_radio:
+            labels["сбор"] = "Сбор 73 860 ₽"
+    # Минималистичный <pre> блок
+    out_lines = []
+    w_label, w_val = 18, 14
+    sep = "─" * (w_label + w_val + 3)
     for key in ("пошлина", "ндс", "сбор"):
         if key in data:
-            lbl = {"пошлина": "Пошлина", "ндс": "НДС", "сбор": "Сбор"}[key]
-            rows.append(f"│ {lbl:<{lw}} │ {data[key]:>{vw}} │")
-    body = "\n".join(rows)
-    tot = f"\n{sep}\n│ {'ИТОГО':<{lw}} │ {data['итого']:>{vw}} │" if "итого" in data else ""
-    return f"\n\n📊 <b>Платежи</b>\n<code>{top}\n{hdr}\n{sep}\n{body}{tot}\n{bot}</code>"
+            lbl = labels.get(key, {"пошлина": "Пошлина", "ндс": "НДС", "сбор": "Сбор"}[key])
+            val = data[key]
+            val_spaced = " ".join(val[i:i+3] for i in range(0, len(val), 3)) if "." not in val else val
+            out_lines.append(f"  {lbl:<{w_label}} {val_spaced:>{w_val}} {currency}")
+    body = "\n".join(out_lines)
+    tot = ""
+    rub_line = ""
+    if "итого" in data:
+        it = data["итого"]
+        it_spaced = " ".join(it[i:i+3] for i in range(0, len(it), 3)) if "." not in it else it
+        tot = f"\n  {sep}\n  {'ИТОГО':<{w_label}} {it_spaced:>{w_val}} {currency}"
+        if rates and currency in rates:
+            try:
+                rate_val = float(rates[currency])
+                it_num = float(it.replace(" ", "").replace(",", "."))
+                rub = round(it_num * rate_val, 2)
+                rub_str = f"{rub:,.2f}".replace(",", " ")
+                rate_str = f"{rate_val:.4f}".rstrip("0").rstrip(".") if "." in f"{rate_val:.4f}" else f"{rate_val}"
+                rub_line = f"\n\n  ~ {rub_str} ₽ по курсу ЦБ РФ ({rate_str} ₽ за 1 {currency})"
+            except (ValueError, TypeError):
+                pass
+    return f"\n<pre>  {sep}\n{body}{tot}\n  {sep}{rub_line}</pre>"
 
-
-# ------------------------------------------------------------------
-# Текстовые сообщения
-# ------------------------------------------------------------------
 
 @dp.message(F.text)
 async def handle_text(message: Message):
@@ -308,16 +364,24 @@ async def handle_text(message: Message):
             else:
                 missing.append(c)
 
-    # === БЫСТРЫЙ ОТВЕТ: только код ===
+    # === БЫСТРЫЙ ОТВЕТ: только код, без расчёта ===
     if codes and found_codes and not is_calc:
         info = found_codes[0]
         pt = info["parsed_tariff"]
-        duty_type = "адвалорная" if pt.get("type") == "percent" else (f"комбинированная ({pt.get('formula', '')})" if pt.get("type") in ("min", "plus") else info['tariff'])
+        # Тип пошлины
+        if pt.get("type") in ("min", "plus", "fixed_eur"):
+            duty_type = f"комбинированная ({pt['formula']})"
+        elif pt.get("type") == "percent":
+            duty_type = "адвалорная"
+        else:
+            duty_type = info['tariff']
+        # НДС
         vat = "10%" if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")) else "22%"
+        # Радио
         radio = "\n⚡ Сбор 73 860 ₽" if any(is_radio_electronics(c) for c in codes) else ""
         await message.answer(
             f"📋 <code>{info['code']}</code>\n"
-            f"🔧 {info['name']}\n"
+            f"🔧 {info['name'][:70]}\n"
             f"💰 Пошлина: {info['tariff']} — {duty_type}\n"
             f"🧾 НДС: {vat}"
             f"{radio}"
@@ -354,13 +418,17 @@ async def handle_text(message: Message):
     msgs = build_messages(user_id, user_text, extra_context=extra)
     answer = await ask_deepseek(msgs)
 
-    # Шапка
+    # === ВЫРЕЗАЕМ дубли от DeepSeek (шапка + блок Платежи) ===
+    answer = _strip_deepseek_dup(answer)
+
+    # === ШАПКА (одна, сверху) ===
     header = ""
     if found_codes:
         info = found_codes[0]
         pt = info["parsed_tariff"]
         header = f"📋 <b>Код:</b> <code>{info['code']}</code>\n"
-        header += f"🔧 {info['name']}\n"
+        name_clean = re.sub(r'\s*\(за исключением[^)]+\)', '', info['name']).strip()
+        header += f"🔧 {name_clean}\n"
         header += f"💰 <b>Пошлина:</b> {info['tariff']}"
         if pt.get("type") in ("min", "plus", "fixed_eur"):
             header += f" — комбинированная ({pt['formula']})"
@@ -374,30 +442,31 @@ async def handle_text(message: Message):
         if missing:
             header += f"⚠️ Не найдены: {', '.join(missing)}\n"
 
-    # Таблица платежей
+    # === ТАБЛИЦА ПЛАТЕЖЕЙ (одна, без ТС) ===
     if is_calc and base_cur != "RUB":
-        box = _format_payments_box(answer, base_cur, rates)
+        ti = found_codes[0] if found_codes else None
+        box = _format_payments_box(answer, base_cur, rates, tariff_info=ti, is_radio=radio_detected)
         if box:
             answer += box
 
-    # Курс ЦБ
+    # Курс ЦБ уже в таблице — отдельная сноска не нужна
     if rates and base_cur != "RUB":
         rate = rates.get(base_cur, "")
-        if rate and rate != "н/д":
+        if rate and rate != "н/д" and rate not in answer and "курсу ЦБ" not in answer:
             answer += f"\n\nℹ️ <i>Курс ЦБ РФ на {rates.get('DATE','сегодня')}: 1 {base_cur} = {rate} ₽</i>"
 
     # НДС fallback
     if not any(k in answer.lower() for k in ("ндс", "налог на добавленную")):
         if any(w in user_text.lower() for w in ("расчёт", "пошлина", "сбор", "ндс")):
-            answer += "\n\n<i>НДС: базовая 22% с 01.01.2026, льготная 10%.</i>"
+            answer += "\n\n<i>НДС: 22% базовая, 10% льготная.</i>"
 
+    # Склеиваем
     if header:
         answer = header + "\n" + answer
 
     if radio_detected and "⚡" not in answer and "73860" not in answer:
         answer = "⚡ <b>РАДИОЭЛЕКТРОНИКА: сбор 73 860 ₽</b> (Приложение №1)\n\n" + answer
 
-    # Финальная сноска — всегда
     if "декларант" not in answer.lower():
         answer += "\n\n📌 <i>Точную информацию уточняйте у декларанта.</i>"
 
