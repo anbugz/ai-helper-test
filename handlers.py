@@ -408,7 +408,11 @@ async def handle_text(message: Message):
         extra = "[КУРСЫ ЦБ недоступны]. НДС: 22%/10%."
 
     comps = extract_ts_components_with_currency(user_text)
-    base_cur = detect_base_currency(user_text)
+    # Базовая валюта = валюта инвойса, если определена. Иначе — detect_base_currency.
+    if "invoice" in comps and comps["invoice"]["currency"] != "RUB":
+        base_cur = comps["invoice"]["currency"]
+    else:
+        base_cur = detect_base_currency(user_text)
 
     # Вычисляем ТС в валюте инвойса с конвертацией
     ts_components: Dict[str, Dict[str, any]] = {}

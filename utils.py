@@ -101,17 +101,78 @@ def extract_ts_components(text: str) -> Dict[str, float]:
 
 
 def _detect_currency_near(text: str, pos: int) -> str:
-    """Определяет валюту по контексту рядом с позицией числа."""
-    snippet = text[pos:pos + 15].lower()
-    if any(x in snippet for x in ("ю", "юань", "юаней", "китайск", "rmb", "¥", "cny")):
+    """Определяет валюту по контексту вокруг позиции числа.
+    Приоритет: ВПЕРЁД (прилепленные валюты: 900дол, 2500р), потом ВОКРУГ.
+    """
+    text_lower = text.lower()
+    # Смотрим вперёд (до 10 символов) — приоритет для прилепленных валют
+    fwd = text_lower[pos:pos + 10]
+    # Смотрим назад (до 10 символов)
+    bwd = text_lower[max(0, pos - 10):pos]
+    # Объединяем
+    combined = bwd + " " + fwd
+
+    # === ПРИОРИТЕТ 1: прилепленные валюты ВПЕРЕДИ числа ===
+    # CNY прилепленный (100000ю, 100000юан)
+    if re.search(r'^\s*ю(?:аней|ани|ань|ан|а|$|[^а-я])', fwd):
         return "CNY"
-    if any(x in snippet for x in ("доллар", "usd", "бакс", "$", "greenback")):
+    # USD прилепленный (900дол, 900долл)
+    if re.search(r'^\s*дол(?:лар|л|$|[^а-я])', fwd):
         return "USD"
-    if any(x in snippet for x in ("евро", "eur", "€")):
+    # EUR прилепленный (300евр, 300евро)
+    if re.search(r'^\s*евр(?:о|$|[^а-я])', fwd):
         return "EUR"
-    if any(x in snippet for x in ("руб", "₽", "р.", "rub")):
+    # RUB прилепленный (2500р, 2500руб)
+    if re.search(r'^\s*руб(?:ль|ли|лей|лях|л|$|[^а-я])', fwd):
         return "RUB"
+    if re.search(r'^\s*р(?:$|[^а-я])', fwd):
+        return "RUB"
+
+    # === ПРИОРИТЕТ 2: валюты ВОКРУГ (отдельные слова) ===
+    # CNY
+    if any(x in combined for x in ("юаней", "юани", "юанях", "юанями", "юань", "юаны", "китайск", "rmb", "yuan")):
+        return "CNY"
+    if "¥" in combined or "cny" in combined:
+        return "CNY"
+
+    # USD
+    if any(x in combined for x in ("доллар", "доллары", "доллара", "долларов", "greenback", "американск")):
+        return "USD"
+    if any(x in combined for x in ("бакс", "баксы", "бакса", "баксов")):
+        return "USD"
+    if "$" in combined or "usd" in combined:
+        return "USD"
+
+    # EUR
+    if any(x in combined for x in ("евро", "евров", "европейск")):
+        return "EUR"
+    if "€" in combined or "eur" in combined:
+        return "EUR"
+
+    # RUB
+    if any(x in combined for x in ("рубль", "рубли", "рублей", "рублях", "рублями", "российск")):
+        return "RUB"
+    if "₽" in combined or "rub" in combined:
+        return "RUB"
+
     return "RUB"
+
+
+def _extract_component(text_clean: str, keywords: tuple) -> Optional[Dict[str, any]]:
+    """Извлекает число и валюту по ключевым словам.
+    Валюта ищется с позиции конца числа (учитывает прилепленные: 100000юаней, 900дол, 2500р).
+    """
+    pattern = "|".join(keywords)
+    m = re.search(rf"(?:{pattern})[^\d]*(\d[\d\s,.]+)", text_clean)
+    if m:
+        raw_num = m.group(1)
+        val = _parse_num(raw_num)
+        # Находим длину числовой части в raw_num
+        num_len = len(re.match(r"[\d\s,.]+", raw_num).group())
+        # Валюта ищется с позиции КОНЦА числа
+        cur = _detect_currency_near(text_clean, m.start(1) + num_len)
+        return {"value": val, "currency": cur}
+    return None
 
 
 def extract_ts_components_with_currency(text: str) -> Dict[str, Dict[str, any]]:
@@ -121,38 +182,41 @@ def extract_ts_components_with_currency(text: str) -> Dict[str, Dict[str, any]]:
     text_lower = text.lower()
     text_clean = re.sub(r"\d{8,10}", "", text_lower)
 
-    # Инвойс
-    m = re.search(
-        r"(?:инвойс|сумма|стоимость|цена)[^\d]*(\d[\d\s,.]+)(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?",
-        text_clean,
-    )
-    if m:
-        val = _parse_num(m.group(1))
-        cur = _detect_currency_near(text_clean, m.end())
-        res["invoice"] = {"value": val, "currency": cur}
+    # Инвойс — по ключевым словам
+    inv = _extract_component(text_clean, ("инвойс", "сумма", "стоимость", "цена"))
+    if inv:
+        res["invoice"] = inv
 
     # Фрахт
-    m = re.search(r"(?:фрахт|доставка|перевозка)[^\d]*(\d[\d\s,.]+)", text_clean)
-    if m:
-        val = _parse_num(m.group(1))
-        cur = _detect_currency_near(text_clean, m.end())
-        res["freight"] = {"value": val, "currency": cur}
+    fr = _extract_component(text_clean, ("фрахт", "доставка", "перевозка"))
+    if fr:
+        res["freight"] = fr
 
     # Страховка
-    m = re.search(r"(?:страховка|страхование)[^\d]*(\d[\d\s,.]+)", text_clean)
-    if m:
-        val = _parse_num(m.group(1))
-        cur = _detect_currency_near(text_clean, m.end())
-        res["insurance"] = {"value": val, "currency": cur}
+    ins = _extract_component(text_clean, ("страховка", "страхование"))
+    if ins:
+        res["insurance"] = ins
 
-    # Fallback invoice
+    # Fallback invoice — первое число ≥ 1000, если не найдено по ключевым словам
     if "invoice" not in res:
-        m = re.search(r"(\d[\d\s,.]{2,})(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?", text_clean)
-        if m:
+        # Ищем число, после которого НЕТ ключевых слов фрахт/страховка
+        for m in re.finditer(r"(\d[\d\s,.]{2,})", text_clean):
             val = _parse_num(m.group(1))
-            if val >= 1000:
-                cur = _detect_currency_near(text_clean, m.end())
-                res["invoice"] = {"value": val, "currency": cur}
+            if val < 1000:
+                continue
+            num_len = len(re.match(r"[\d\s,.]+", m.group(1)).group())
+            pos_after = m.start(1) + num_len
+            after = text_clean[pos_after:pos_after + 15]
+            # Пропускаем если это фрахт или страховка
+            if any(kw in after for kw in ("фрахт", "доставк", "перевозк", "страховк", "страхан")):
+                continue
+            # Пропускаем если перед числом ключевое слово фрахта/страховки
+            before = text_clean[max(0, m.start() - 20):m.start()]
+            if any(kw in before for kw in ("фрахт", "доставк", "перевозк", "страховк", "страхан")):
+                continue
+            cur = _detect_currency_near(text_clean, pos_after)
+            res["invoice"] = {"value": val, "currency": cur}
+            break
 
     return res
 
