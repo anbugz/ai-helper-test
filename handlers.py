@@ -379,9 +379,10 @@ async def handle_text(message: Message):
         vat = "10%" if any(w in info['name'].lower() for w in ("пищев", "детск", "медиц", "книг", "печат")) else "22%"
         # Радио
         radio = "\n⚡ Сбор 73 860 ₽" if any(is_radio_electronics(c) for c in codes) else ""
+        name_clean = re.sub(r'\s*\(за исключением[^)]+\)', '', info['name']).strip()
         await message.answer(
             f"📋 <code>{info['code']}</code>\n"
-            f"🔧 {info['name'][:70]}\n"
+            f"🔧 {name_clean}\n"
             f"💰 Пошлина: {info['tariff']} — {duty_type}\n"
             f"🧾 НДС: {vat}"
             f"{radio}"

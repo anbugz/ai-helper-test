@@ -324,31 +324,83 @@ def update_settings(key: str, value: str) -> None:
 # ------------------------------------------------------------------
 
 def create_logs_xlsx(rows: List[Tuple], sheet_name: str = "logs") -> bytes:
-    """Генерирует .xlsx из списка кортежей через zipfile + xml."""
+    """Генерирует .xlsx из списка кортежей через zipfile + xml.
+    
+    Полная структура: workbook.xml, _rels, Content_Types — Excel открывает без ошибок.
+    """
     import zipfile
     import xml.etree.ElementTree as ET
 
     ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-    rns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    headers = ["user_id", "username", "role", "content", "created_at"]
+    all_rows = [headers] + list(rows)
 
+    # --- sheet1.xml ---
     root = ET.Element(f"{{{ns}}}worksheet")
-    sheet_data = ET.SubElement(root, f"{{{ns}}}sheetData")
-
-    for r_idx, row in enumerate(rows, 1):
-        row_elem = ET.SubElement(sheet_data, f"{{{ns}}}row", {f"{{{ns}}}r": str(r_idx)})
+    sd = ET.SubElement(root, f"{{{ns}}}sheetData")
+    for r_idx, row in enumerate(all_rows, 1):
+        row_elem = ET.SubElement(sd, f"{{{ns}}}row", {f"{{{ns}}}r": str(r_idx)})
         for c_idx, value in enumerate(row):
             cell_ref = f"{chr(65 + c_idx)}{r_idx}"
-            cell = ET.SubElement(row_elem, f"{{{ns}}}c", {f"{{{ns}}}r": cell_ref})
-            v = ET.SubElement(cell, f"{{{ns}}}v")
-            v.text = str(value) if value is not None else ""
+            cell = ET.SubElement(row_elem, f"{{{ns}}}c", {f"{{{ns}}}r": cell_ref, f"{{{ns}}}t": "inlineStr"})
+            is_elem = ET.SubElement(cell, f"{{{ns}}}is")
+            t_elem = ET.SubElement(is_elem, f"{{{ns}}}t")
+            t_elem.text = str(value) if value is not None else ""
+            # XML-escape для спецсимволов
+            t_elem.text = t_elem.text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    sheet_xml = ET.tostring(root, encoding="unicode", xml_declaration=True)
+    sheet_xml = sheet_xml.replace("ns0:", "").replace("xmlns:ns0=", "xmlns=")
+    sheet_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + sheet_xml.split("?>", 1)[-1].strip()
 
-    xml_bytes = ET.tostring(root, encoding="unicode", xml_declaration=True)
-    xml_bytes = xml_bytes.replace("ns0:", "").replace("xmlns:ns0=", "xmlns=")
-    xml_bytes = xml_bytes.encode("utf-8")
+    # --- workbook.xml ---
+    wb_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    wb_rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    wb = ET.Element(f"{{{wb_ns}}}workbook")
+    sheets = ET.SubElement(wb, f"{{{wb_ns}}}sheets")
+    ET.SubElement(sheets, f"{{{wb_ns}}}sheet", {
+        f"{{{wb_ns}}}name": sheet_name,
+        f"{{{wb_ns}}}sheetId": "1",
+        f"{{{wb_rel}}}id": "rId1"
+    })
+    wb_xml = ET.tostring(wb, encoding="unicode", xml_declaration=True)
+    wb_xml = wb_xml.replace("ns0:", "").replace("xmlns:ns0=", "xmlns=")
+    wb_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + wb_xml.split("?>", 1)[-1].strip()
 
-    xlsx_buffer = BytesIO()
-    with zipfile.ZipFile(xlsx_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("xl/worksheets/sheet1.xml", xml_bytes)
-        zf.writestr("[Content_Types].xml", b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+    # --- _rels/.rels ---
+    rels_pkg = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' \
+               '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' \
+               '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' \
+               '</Relationships>'
 
-    return xlsx_buffer.getvalue()
+    # --- xl/_rels/workbook.xml.rels ---
+    rels_wb = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' \
+              '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' \
+              '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' \
+              '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>' \
+              '</Relationships>'
+
+    # --- sharedStrings.xml (пустой, но обязателен) ---
+    ss = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' \
+         '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0" uniqueCount="0"/>'
+
+    # --- [Content_Types].xml ---
+    ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' \
+         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' \
+         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' \
+         '<Default Extension="xml" ContentType="application/xml"/>' \
+         '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' \
+         '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' \
+         '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>' \
+         '</Types>'
+
+    # --- Собираем zip ---
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", ct.encode("utf-8"))
+        zf.writestr("_rels/.rels", rels_pkg.encode("utf-8"))
+        zf.writestr("xl/workbook.xml", wb_xml.encode("utf-8"))
+        zf.writestr("xl/_rels/workbook.xml.rels", rels_wb.encode("utf-8"))
+        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml.encode("utf-8"))
+        zf.writestr("xl/sharedStrings.xml", ss.encode("utf-8"))
+
+    return buf.getvalue()
