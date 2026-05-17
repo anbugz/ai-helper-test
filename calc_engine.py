@@ -104,6 +104,22 @@ def _format_calculation_fallback(
     eur_value = float(pt.get("eur_value", 0)) if pt.get("eur_value") else 0
     tariff_type = pt.get("type", "")
 
+    # Хелперы (определяем ДО использования в EUR-блоке)
+    rate_cur = None
+    if rates and currency in rates:
+        try:
+            rate_cur = float(rates[currency])
+        except (ValueError, TypeError):
+            rate_cur = None
+
+    def fmt(num: float) -> str:
+        return f"{num:,.2f}".replace(",", " ")
+
+    def to_rub(val: float) -> str:
+        if rate_cur and currency != "RUB":
+            return f"{fmt(round(val * rate_cur, 2))} ₽"
+        return ""
+
     # === РАСЧЁТ ПОШЛИНЫ ===
     # Адвалорная часть (всегда)
     duty_percent = round(ts_num * rate / 100, 2) if rate else 0.0
@@ -141,22 +157,6 @@ def _format_calculation_fallback(
     fee_cur, _ = convert_fee_to_currency(fee_rub, currency, rates)
 
     total = duty + vat + fee_cur
-
-    # Курс ЦБ РФ для валюты инвойса (для справочной конвертации ₽ в конце)
-    rate_cur = None
-    if rates and currency in rates:
-        try:
-            rate_cur = float(rates[currency])
-        except (ValueError, TypeError):
-            rate_cur = None
-
-    def fmt(num: float) -> str:
-        return f"{num:,.2f}".replace(",", " ")
-
-    def to_rub(val: float) -> str:
-        if rate_cur and currency != "RUB":
-            return f"{fmt(round(val * rate_cur, 2))} ₽"
-        return ""
 
     lines = []
 
