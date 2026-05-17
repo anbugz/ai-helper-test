@@ -1,204 +1,281 @@
 """
-calc_engine.py — логика расчёта ТП и форматирования ответа.
-Вся математика здесь, не в handlers.py.
+utils.py — хелперы: курсы ЦБ, safe_send, rate_limit, валюты, DeepSeek, построение сообщений.
 """
+import asyncio
 import re
-from typing import Dict, Optional
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+from aiogram.types import Message
+from aiogram.exceptions import TelegramBadRequest
+
+from config import (
+    DEEPSEEK_API_KEY, CURRENCY_SYNONYMS, MAX_HISTORY,
+    RATE_LIMIT_SECONDS, SYSTEM_PROMPT, logger,
+)
+from database import get_dialog_history
+
+_last_request_time: Dict[int, datetime] = {}
 
 
-def _strip_deepseek_dup(answer: str) -> str:
-    """Вырезает дубли от DeepSeek: шапку с кодом и блок Платежи.
-    Осторожно: не трогаем хороший развёрнутый расчёт с "Итоговый расчёт" или "ИТОГО платежей".
-    """
-    lower = answer.lower()
-    if any(k in lower for k in ("итого платежей", "итоговый расчёт", "итоговый расчет", "📊 итоговый")):
-        return answer.strip()
-
-    lines = answer.split("\n")
-    pay_start = -1
-    for i, line in enumerate(lines):
-        ls = line.strip().lower()
-        if (
-            ls in ("платежи:", "платежи")
-            or ls.startswith("📊 платежи:")
-            or ls.startswith("📊 **платежи**")
-            or "**платежи**" in ls
-            or "платежи в валюте" in ls
-        ):
-            pay_start = i
-            break
-    if pay_start >= 0:
-        lines = lines[:pay_start]
-    tc_start = -1
-    for i, line in enumerate(lines):
-        if line.strip().startswith("📊 Таможенная стоимость:") or line.strip().startswith(
-            "📊 Таможенная стоим"
-        ):
-            tc_start = i
-            break
-    if tc_start > 0:
-        header_end = tc_start
-        has_header = False
-        for j in range(tc_start - 1, -1, -1):
-            ls = lines[j].strip()
-            if any(
-                ls.startswith(k)
-                for k in ("📋 Код:", "📋 **Код:**", "🔧", "💰", "🧾", "⚡")
-            ):
-                has_header = True
-                header_end = j
-            elif ls == "":
-                continue
-            else:
-                break
-        if has_header:
-            lines = lines[:header_end] + lines[tc_start:]
-    return "\n".join(lines).strip()
+def check_rate_limit(user_id: int) -> bool:
+    now = datetime.utcnow()
+    last = _last_request_time.get(user_id)
+    if last and (now - last).total_seconds() < RATE_LIMIT_SECONDS:
+        return False
+    _last_request_time[user_id] = now
+    return True
 
 
-def _format_calculation_fallback(
-    code: Optional[str],
-    name: Optional[str],
-    currency: str,
-    rates: dict,
-    tariff_info: dict,
-    is_radio: bool = False,
-    customs_fee_rub: float = 0,
-    vat_rate: float = 0.22,
-    ts_fallback: Optional[float] = None,
-    ts_components: Optional[Dict] = None,
-    weight_kg: Optional[float] = None,
-) -> str:
-    """Компактный fallback-расчёт без пошаговой арифметики.
-    Формат: Исходные данные → Конвертация → Итоговый расчёт.
-    """
-    if not ts_fallback or not tariff_info:
-        return ""
+def now_msk() -> datetime:
+    return datetime.utcnow() + timedelta(hours=3)
 
+
+def detect_base_currency(text: str) -> str:
+    text_lower = text.lower()
+    for synonym, code in CURRENCY_SYNONYMS.items():
+        if synonym in text_lower:
+            return code
+    text_upper = text.upper()
+    for c in ("CNY", "USD", "EUR", "RUB"):
+        if c in text_upper:
+            return c
+    if "юан" in text_lower or "китайск" in text_lower or "rmb" in text_lower:
+        return "CNY"
+    if "доллар" in text_lower or "бакс" in text_lower or "$" in text:
+        return "USD"
+    if "евро" in text_lower or "€" in text:
+        return "EUR"
+    return "RUB"
+
+
+def extract_currencies(text: str) -> Dict[str, str]:
+    found = {}
+    text_lower = text.lower()
+    for synonym, code in CURRENCY_SYNONYMS.items():
+        if synonym in text_lower:
+            found[code] = synonym
+    return found
+
+
+def _parse_num(s: str) -> float:
+    s = s.strip().replace(" ", "").replace(",", ".")
     try:
-        ts_num = float(ts_fallback)
+        return float(s)
     except (ValueError, TypeError):
-        return ""
+        return 0.0
 
-    pt = tariff_info.get("parsed_tariff", {})
-    rate = float(pt.get("percent", 0)) if pt.get("percent") else 0
 
-    duty = round(ts_num * rate / 100, 2) if rate else 0.0
-    vat = round((ts_num + duty) * vat_rate, 2)
+def extract_ts_components(text: str) -> Dict[str, float]:
+    """Пытается извлечь инвойс, фрахт, страховку из текста пользователя.
+    Если ключевых слов нет — первое число >= 1000 считаем инвойсом."""
+    res: Dict[str, float] = {}
+    text_lower = text.lower()
+    text_clean = re.sub(r"\d{8,10}", "", text_lower)
 
-    fee_rub = customs_fee_rub
-    fee_cur = 0.0
-    if fee_rub > 0:
-        if currency == "RUB":
-            fee_cur = fee_rub
-        elif rates and currency in rates:
-            try:
-                fee_cur = round(fee_rub / float(rates[currency]), 2)
-            except (ValueError, TypeError, ZeroDivisionError):
-                fee_cur = 0.0
+    m = re.search(
+        r"(?:инвойс|сумма|стоимость|цена)[^\d]*(\d[\d\s,.]+)(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?",
+        text_clean,
+    )
+    if m:
+        res["invoice"] = _parse_num(m.group(1))
 
-    total = duty + vat + fee_cur
+    m = re.search(r"(?:фрахт|доставка|перевозка)[^\d]*(\d[\d\s,.]+)", text_clean)
+    if m:
+        res["freight"] = _parse_num(m.group(1))
 
-    rate_cur = None
-    if rates and currency in rates:
-        try:
-            rate_cur = float(rates[currency])
-        except (ValueError, TypeError):
-            rate_cur = None
+    m = re.search(r"(?:страховка|страхование)[^\d]*(\d[\d\s,.]+)", text_clean)
+    if m:
+        res["insurance"] = _parse_num(m.group(1))
 
-    def fmt(num: float) -> str:
-        return f"{num:,.2f}".replace(",", " ")
+    # Fallback invoice: если инвойс не найден явно, берём первое число >= 1000
+    if "invoice" not in res:
+        m = re.search(r"(\d[\d\s,.]{2,})(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?", text_clean)
+        if m:
+            val = _parse_num(m.group(1))
+            if val >= 1000:
+                res["invoice"] = val
 
-    def to_rub(val: float) -> str:
-        if rate_cur and currency != "RUB":
-            return f"{fmt(round(val * rate_cur, 2))} ₽"
-        return ""
+    return res
 
-    lines = []
 
-    # 📋 Исходные данные
-    lines.append("📋 <b>Исходные данные:</b>")
-    if code:
-        lines.append(f"• Код ТН ВЭД: <code>{code}</code> — {name or '—'}")
+def _detect_currency_near(text: str, pos: int) -> str:
+    """Определяет валюту по контексту рядом с позицией числа."""
+    snippet = text[pos:pos + 15].lower()
+    if any(x in snippet for x in ("ю", "юань", "юаней", "китайск", "rmb", "¥", "cny")):
+        return "CNY"
+    if any(x in snippet for x in ("доллар", "usd", "бакс", "$", "greenback")):
+        return "USD"
+    if any(x in snippet for x in ("евро", "eur", "€")):
+        return "EUR"
+    if any(x in snippet for x in ("руб", "₽", "р.", "rub")):
+        return "RUB"
+    return "RUB"
 
-    tariff_str = tariff_info.get("tariff", "—")
-    duty_type = "адвалорная"
-    if pt.get("type") in ("min", "plus", "fixed_eur"):
-        duty_type = f"комбинированная ({pt.get('formula', '')})"
-    elif pt.get("type") == "fixed_usd":
-        duty_type = f"специфическая ({pt.get('formula', '')})"
 
-    lines.append(f"• Пошлина: <b>{tariff_str}</b> ({duty_type})")
-    lines.append(f"• НДС: <b>{int(vat_rate * 100)}%</b> ({'льготная' if vat_rate == 0.10 else 'базовая'})")
-    if is_radio:
-        lines.append("• Сбор: <b>73 860 ₽</b> (фиксированный, код в перечне радиоэлектроники)")
-    else:
-        if fee_rub > 0:
-            lines.append(f"• Сбор: <b>{fee_rub:,.0f} ₽</b> (по шкале ПП РФ №1637)")
+def extract_ts_components_with_currency(text: str) -> Dict[str, Dict[str, any]]:
+    """Извлекает компоненты ТС с валютами.
+    Возвращает: {"invoice": {"value": 100000.0, "currency": "CNY"}, ...}"""
+    res: Dict[str, Dict[str, any]] = {}
+    text_lower = text.lower()
+    text_clean = re.sub(r"\d{8,10}", "", text_lower)
+
+    # Инвойс
+    m = re.search(
+        r"(?:инвойс|сумма|стоимость|цена)[^\d]*(\d[\d\s,.]+)(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?",
+        text_clean,
+    )
+    if m:
+        val = _parse_num(m.group(1))
+        cur = _detect_currency_near(text_clean, m.end())
+        res["invoice"] = {"value": val, "currency": cur}
+
+    # Фрахт
+    m = re.search(r"(?:фрахт|доставка|перевозка)[^\d]*(\d[\d\s,.]+)", text_clean)
+    if m:
+        val = _parse_num(m.group(1))
+        cur = _detect_currency_near(text_clean, m.end())
+        res["freight"] = {"value": val, "currency": cur}
+
+    # Страховка
+    m = re.search(r"(?:страховка|страхование)[^\d]*(\d[\d\s,.]+)", text_clean)
+    if m:
+        val = _parse_num(m.group(1))
+        cur = _detect_currency_near(text_clean, m.end())
+        res["insurance"] = {"value": val, "currency": cur}
+
+    # Fallback invoice
+    if "invoice" not in res:
+        m = re.search(r"(\d[\d\s,.]{2,})(?:\s*(?:ю|юань|юаней|usd|eur|rub|\$|€|¥))?", text_clean)
+        if m:
+            val = _parse_num(m.group(1))
+            if val >= 1000:
+                cur = _detect_currency_near(text_clean, m.end())
+                res["invoice"] = {"value": val, "currency": cur}
+
+    return res
+
+
+CBR_URL = "https://www.cbr.ru/scripts/XML_daily.asp"
+
+
+async def get_cbr_rates() -> Dict[str, str]:
+    rates = {"CNY": "н/д", "USD": "н/д", "EUR": "н/д", "DATE": ""}
+    try:
+        def _fetch():
+            with urllib.request.urlopen(CBR_URL, timeout=15) as resp:
+                return resp.read().decode("windows-1251")
+        xml_text = await asyncio.to_thread(_fetch)
+        root = ET.fromstring(xml_text)
+        date_attr = root.get("Date", "")
+        rates["DATE"] = date_attr
+        for valute in root.findall("Valute"):
+            char_code = valute.findtext("CharCode", "")
+            value = valute.findtext("Value", "").replace(",", ".")
+            nominal = int(valute.findtext("Nominal", "1"))
+            if char_code in ("CNY", "USD", "EUR"):
+                try:
+                    rates[char_code] = str(round(float(value) / nominal, 4))
+                except ValueError:
+                    pass
+    except Exception as e:
+        logger.error(f"Ошибка получения курсов ЦБ: {e}")
+    return rates
+
+
+def format_cross_rates(rates: Dict[str, str]) -> str:
+    parts = []
+    try:
+        cny = float(rates.get("CNY", 0))
+        usd = float(rates.get("USD", 0))
+        eur = float(rates.get("EUR", 0))
+        if cny and usd:
+            parts.append(f"CNY/USD={round(cny/usd, 4)}")
+        if cny and eur:
+            parts.append(f"CNY/EUR={round(cny/eur, 4)}")
+        if usd and eur:
+            parts.append(f"USD/EUR={round(usd/eur, 4)}")
+    except (ValueError, ZeroDivisionError):
+        pass
+    return ", ".join(parts) if parts else "н/д"
+
+
+async def ask_deepseek(messages: List[Dict]) -> str:
+    try:
+        import openai
+    except ImportError:
+        return "⚠️ Модуль openai не установлен. Установите: pip install openai"
+    client = openai.AsyncOpenAI(
+        api_key=DEEPSEEK_API_KEY,
+        base_url="https://api.deepseek.com/v1",
+    )
+    try:
+        response = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            temperature=0.2,
+            max_tokens=1500,
+        )
+        return response.choices[0].message.content or ""
+    except Exception as e:
+        logger.error(f"DeepSeek API error: {e}")
+        return f"⚠️ Ошибка при обращении к AI: {e}"
+
+
+def build_messages(user_id: int, user_text: str, extra_context: str = "") -> List[Dict]:
+    msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if extra_context:
+        msgs.append({"role": "system", "content": extra_context})
+    history = get_dialog_history(user_id, limit=MAX_HISTORY)
+    for h in history:
+        msgs.append({"role": h["role"], "content": h["content"]})
+    msgs.append({"role": "user", "content": user_text})
+    return msgs
+
+
+def parse_date_range(text: str) -> tuple:
+    now = datetime.utcnow()
+    text_lower = text.lower()
+    if "сегодня" in text_lower:
+        today = now.strftime("%Y-%m-%d")
+        return today, today
+    if "вчера" in text_lower:
+        yest = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        return yest, yest
+    if "неделю" in text_lower or "за неделю" in text_lower:
+        start = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+        return start, now.strftime("%Y-%m-%d")
+    dates = re.findall(r"(\d{2})[.](\d{2})[.](\d{4})", text)
+    if len(dates) >= 2:
+        d1 = f"{dates[0][2]}-{dates[0][1]}-{dates[0][0]}"
+        d2 = f"{dates[1][2]}-{dates[1][1]}-{dates[1][0]}"
+        return d1, d2
+    return None, None
+
+
+async def safe_send(message: Message, text: str, chunk: int = 4000) -> None:
+    try:
+        if len(text) <= chunk:
+            await message.answer(text)
+            return
+        parts = [text[i:i + chunk] for i in range(0, len(text), chunk)]
+        for part in parts:
+            await message.answer(part)
+            await asyncio.sleep(0.3)
+    except TelegramBadRequest as e:
+        err = str(e).lower()
+        if "parse" in err or "tag" in err or "entity" in err:
+            plain = text.replace("<b>", "").replace("</b>", "")
+            plain = plain.replace("<i>", "").replace("</i>", "")
+            plain = plain.replace("<code>", "").replace("</code>", "")
+            plain = plain.replace("<pre>", "").replace("</pre>", "")
+            plain = plain.replace("<a href=", "[").replace("</a>", "]")
+            if len(plain) <= chunk:
+                await message.answer(plain, parse_mode=None)
+                return
+            for part in [plain[i:i + chunk] for i in range(0, len(plain), chunk)]:
+                await message.answer(part, parse_mode=None)
+                await asyncio.sleep(0.3)
         else:
-            lines.append("• Сбор: <b>0 ₽</b>")
-
-    # Компоненты ТС с валютами
-    if ts_components:
-        for key, label in (("invoice", "Инвойс"), ("freight", "Фрахт"), ("insurance", "Страховка")):
-            if key in ts_components:
-                comp = ts_components[key]
-                val = comp["value"]
-                cur = comp["currency"]
-                if cur == currency:
-                    lines.append(f"• {label}: <code>{fmt(val)} {cur}</code>")
-                else:
-                    lines.append(f"• {label}: <code>{fmt(val)} {cur}</code> → <code>{fmt(comp['converted'])} {currency}</code>")
-        lines.append(f"• <b>ТС:</b> <code>{fmt(ts_num)} {currency}</code>")
-    else:
-        lines.append(f"• Стоимость: <code>{fmt(ts_num)} {currency}</code>")
-    if weight_kg:
-        lines.append(f"• Вес: <code>{weight_kg} кг</code>")
-    else:
-        lines.append("• Вес: не указан")
-    lines.append("")
-
-    # 🔄 Конвертация
-    conv_lines = []
-    if ts_components:
-        for key, label in (("freight", "Фрахт"), ("insurance", "Страховка")):
-            if key in ts_components:
-                comp = ts_components[key]
-                if comp["currency"] != currency and comp.get("rate"):
-                    conv_lines.append(f"• {label}: {comp['rate']}")
-    # Евро-компонента пошлины
-    if pt.get("type") in ("min", "plus", "fixed_eur") and rates and "EUR" in rates:
-        eur_r = rates.get("EUR", "—")
-        cny_r = rates.get("CNY", "—")
-        usd_r = rates.get("USD", "—")
-        conv_lines.append(f"• Курс EUR: 1 EUR = {eur_r} ₽ (для конвертации EUR/кг)")
-        if currency == "CNY" and eur_r not in ("—", "", None) and cny_r not in ("—", "", None):
-            try:
-                cross = round(float(eur_r) / float(cny_r), 4)
-                conv_lines.append(f"• Кросс EUR→CNY: 1 EUR = {cross} CNY")
-            except (ValueError, TypeError):
-                pass
-        elif currency == "USD" and eur_r not in ("—", "", None) and usd_r not in ("—", "", None):
-            try:
-                cross = round(float(eur_r) / float(usd_r), 4)
-                conv_lines.append(f"• Кросс EUR→USD: 1 EUR = {cross} USD")
-            except (ValueError, TypeError):
-                pass
-
-    if conv_lines:
-        lines.append(f"🔄 <b>Конвертация в валюту инвойса ({currency}):</b>")
-        lines.extend(conv_lines)
-        lines.append("")
-
-    # 📊 Итоговый расчёт
-    lines.append("📊 <b>Итоговый расчёт</b>")
-    lines.append(f"Таможенная стоимость:  {fmt(ts_num):>12} {currency}   (~ {to_rub(ts_num)})")
-    lines.append(f"Пошлина {rate}%:        {fmt(duty):>12} {currency}   (~ {to_rub(duty)})")
-    lines.append(f"НДС {int(vat_rate * 100)}%:              {fmt(vat):>12} {currency}   (~ {to_rub(vat)})")
-    if fee_cur > 0:
-        fee_label = "Сбор (радио):" if is_radio else "Сбор:"
-        lines.append(f"{fee_label:<22} {fmt(fee_cur):>12} {currency}   (~ {to_rub(fee_cur)})")
-    lines.append("────────────────────────────────────────────────")
-    lines.append(f"<b>ИТОГО платежей:</b>     {fmt(total):>12} {currency}   (~ {to_rub(total)})")
-
-    return "\n".join(lines)
+            raise
