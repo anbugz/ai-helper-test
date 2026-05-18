@@ -123,10 +123,12 @@ def is_radio_electronics(code: str) -> bool:
     if len(c) >= 2 and c[:2] not in _RADIO_GROUPS:
         return False
     for pattern in RADIO_ELECTRONICS_CODES_SET:
-        if len(pattern) <= 6:
+        if len(pattern) <= 9:
+            # Короткие паттерны (4-9 знаков) = группа/подгруппа/позиция → startswith
             if c.startswith(pattern):
                 return True
         else:
+            # 10-значные паттерны = конкретный товар → точное совпадение
             if c == pattern:
                 return True
     return False
