@@ -18,7 +18,7 @@ else:
     _default_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.db")
 DB_PATH = os.getenv("DB_PATH", _default_db)
 
-VERSION = "rev13 | 2026-05-18 | TNVED_FIX"
+VERSION = "rev14 | 2026-05-18 | TOPIC_DETECT"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
