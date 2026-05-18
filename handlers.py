@@ -706,7 +706,8 @@ async def handle_text(message: Message):
             )
         
             extra = "\n".join(context_parts)
-            msgs = build_messages(user_id, user_text, extra_context=extra)
+            # Подбор кода — без истории (чтобы не склеивались запросы)
+            msgs = build_messages(user_id, user_text, extra_context=extra, include_history=False)
             answer = await ask_deepseek(msgs)
             answer = _strip_ai_assistant_junk(answer)
             
