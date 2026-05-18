@@ -489,8 +489,10 @@ async def handle_text(message: Message):
         else:
             customs_fee_rub = calculate_customs_fee(ts_rub_for_fee)
 
-        msgs = build_messages(user_id, user_text, extra_context=extra)
-        answer = await ask_deepseek(msgs)
+        # === ВЭД-РАСЧЁТ: НЕ вызываем DeepSeek, сразу fallback ===
+        # DeepSeek даёт verbose ответы с "Отлично", пошаговыми разборами,
+        # формулами — это не нужно. Fallback даёт чистый расчёт.
+        answer = ""
 
     else:
         # === СЦЕНАРИЙ 3: AI-АССИСТЕНТ (общий вопрос) ===
@@ -499,15 +501,11 @@ async def handle_text(message: Message):
         extra += "НЕ пиши курс ЦБ РФ в ответе — он будет добавлен автоматически."
         msgs = build_messages(user_id, user_text, extra_context=extra)
         answer = await ask_deepseek(msgs)
-
-    # После этого блок идёт обработка ответа DeepSeek...
-    answer = _strip_deepseek_dup(answer)
-    
-    # Для AI-ассистента — убираем лишнее (markdown, примеры, придуманные курсы)
-    if not is_calc:
+        
+        # Убираем лишнее (markdown, примеры, придуманные курсы)
         answer = _strip_ai_assistant_junk(answer)
 
-    # --- РАСЧЁТНЫЙ ЗАПРОС: чистый fallback, без дублей ------------
+    # --- РАСЧЁТНЫЙ ЗАПРОС: чистый fallback ----------------------
     if is_calc and found_codes and ts_fallback and base_cur:
         code_val = found_codes[0]["code"]
         name_val = TNVED_FULL_NAMES.get(
