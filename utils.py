@@ -327,13 +327,14 @@ async def ask_deepseek(messages: List[Dict]) -> str:
         return f"⚠️ Ошибка при обращении к AI: {e}"
 
 
-def build_messages(user_id: int, user_text: str, extra_context: str = "") -> List[Dict]:
+def build_messages(user_id: int, user_text: str, extra_context: str = "", include_history: bool = True) -> List[Dict]:
     msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
     if extra_context:
         msgs.append({"role": "system", "content": extra_context})
-    history = get_dialog_history(user_id, limit=MAX_HISTORY)
-    for h in history:
-        msgs.append({"role": h["role"], "content": h["content"]})
+    if include_history:
+        history = get_dialog_history(user_id, limit=MAX_HISTORY)
+        for h in history:
+            msgs.append({"role": h["role"], "content": h["content"]})
     msgs.append({"role": "user", "content": user_text})
     return msgs
 

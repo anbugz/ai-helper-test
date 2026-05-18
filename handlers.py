@@ -759,12 +759,11 @@ async def handle_text(message: Message):
         extra += "НЕ придумывай ставки и курсы."
 
         # Удаляем коды ТН ВЭД перед парсингом сумм, чтобы код не стал инвойсом
-        text_clean_for_ts = user_text
+        # Нормализуем: 5208 43 000 0 100000юаней → 5208430000 100000юаней
+        text_clean_for_ts = re.sub(r"(\d)\s+(?=\d)", r"\1", user_text)
+        # Теперь удаляем коды (уже без пробелов)
         for c in codes:
             text_clean_for_ts = text_clean_for_ts.replace(c, "")
-            # Удаляем и раздельный вариант (5208 43 000 0)
-            spaced = " ".join(c[i:i+2] for i in range(0, len(c), 2))
-            text_clean_for_ts = text_clean_for_ts.replace(spaced, "")
         
         comps = extract_ts_components_with_currency(text_clean_for_ts)
         # Базовая валюта = валюта инвойса, если определена
@@ -836,7 +835,8 @@ async def handle_text(message: Message):
         # Контекст без ВЭД-специфики и без курса
         extra = "Отвечай как эксперт West Asia по ВЭД и логистике. "
         extra += "НЕ пиши курс ЦБ РФ в ответе — он будет добавлен автоматически."
-        msgs = build_messages(user_id, user_text, extra_context=extra)
+        # AI-ассистент — без истории (чтобы не склеивались запросы)
+        msgs = build_messages(user_id, user_text, extra_context=extra, include_history=False)
         answer = await ask_deepseek(msgs)
         
         # Лёгкая очистка — только markdown-таблицы и курс ЦБ если придуман
