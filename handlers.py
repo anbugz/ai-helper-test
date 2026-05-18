@@ -673,7 +673,7 @@ async def handle_text(message: Message):
         msgs = build_messages(user_id, user_text, extra_context=extra)
         answer = await ask_deepseek(msgs)
         
-        # Убираем лишнее (markdown, примеры, придуманные курсы)
+        # Лёгкая очистка — только markdown-таблицы и курс ЦБ если придуман
         answer = _strip_ai_assistant_junk(answer)
 
     # --- РАСЧЁТНЫЙ ЗАПРОС: чистый fallback ----------------------

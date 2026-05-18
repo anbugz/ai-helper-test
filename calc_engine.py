@@ -320,21 +320,20 @@ def _format_calculation_fallback(
         lines.extend(conv_lines)
         lines.append("")
 
-    # ── БЛОК РАСЧЁТА ПОШЛИНЫ (только для комбинированных с EUR) ──
-    if duty_eur_cur:
+    # ── БЛОК РАСЧЁТА ПОШЛИНЫ (только если есть EUR-компонента И пошлина > 0) ──
+    if duty_eur_cur and duty > 0:
         lines.append("⚖️ Расчёт пошлины:")
-        lines.append(f"• Адвалорная: {rate:g}% × {fmt(ts_num)} {currency} = {fmt(duty_percent)} {currency}")
+        if duty_percent > 0:
+            lines.append(f"• Адвалорная: {rate:g}% × {fmt(ts_num)} {currency} = {fmt(duty_percent)} {currency}")
+        lines.append(f"• EUR-компонента: {eur_value} EUR/кг × {int(weight_kg)} кг = {eur_value * int(weight_kg)} EUR → {fmt(duty_eur_cur)} {currency}")
         if tariff_type == "min":
-            lines.append(f"• EUR-компонента: {eur_value} EUR/кг × {int(weight_kg)} кг = {eur_value * int(weight_kg)} EUR → {fmt(duty_eur_cur)} {currency}")
             if duty_eur_cur > duty_percent:
                 lines.append(f"• Выбрано: EUR-компонента ({fmt(duty_eur_cur)} {currency} > {fmt(duty_percent)} {currency})")
             else:
                 lines.append(f"• Выбрано: Адвалорная {rate:g}% ({fmt(duty_percent)} {currency} ≥ {fmt(duty_eur_cur)} {currency})")
         elif tariff_type == "plus":
-            lines.append(f"• EUR-компонента: {eur_value} EUR/кг × {int(weight_kg)} кг = {eur_value * int(weight_kg)} EUR → {fmt(duty_eur_cur)} {currency}")
             lines.append(f"• Выбрано: Сумма обоих вариантов ({fmt(duty_percent)} + {fmt(duty_eur_cur)} = {fmt(duty)} {currency})")
         elif tariff_type == "fixed_eur":
-            lines.append(f"• EUR-компонента: {eur_value} EUR/кг × {int(weight_kg)} кг = {eur_value * int(weight_kg)} EUR → {fmt(duty_eur_cur)} {currency}")
             lines.append(f"• Выбрано: Фиксированная EUR-компонента")
         lines.append("")
 
