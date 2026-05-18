@@ -262,6 +262,16 @@ async def handle_text(message: Message):
 
     text_lower = user_text.lower()
 
+    # === ОБРАБОТКА ТРАНСЛИТА (vatnye volokna → ватные волокна) ===
+    has_cyrillic = bool(re.search(r'[а-яё]', text_lower))
+    has_latin = bool(re.search(r'[a-z]', text_lower))
+    if not has_cyrillic and has_latin:
+        translit_map = str.maketrans(
+            "abvgdeziyklmnoprstufhe'chshyaeyu",
+            "абвгдезийклмнопрстуфхэчшьяею",
+        )
+        text_lower = text_lower.translate(translit_map)
+
     log_keywords = ["логи", "выгрузи логи", "экспорт логов", "логи работы"]
     if user_id == ADMIN_ID and any(
         text_lower.startswith(k) or f" {k} " in f" {text_lower} " for k in log_keywords
