@@ -22,7 +22,6 @@ from config import (
 )
 from database import (
     save_message,
-    clear_history,
     save_correction,
     save_custom_codes,
     get_knowledge,
@@ -30,6 +29,7 @@ from database import (
     save_knowledge,
     get_dialogs_for_export,
     create_logs_xlsx,
+    search_tnved_in_db,
 )
 from parsers import parse_xlsx, parse_docx, parse_txt, _extract_codes_from_rows
 import tnved_engine
@@ -75,14 +75,20 @@ async def cmd_help(message: Message):
         "• Отправь текст с кодом ТН ВЭД — получишь расчёт.\n"
         "• Отправь .xlsx файл — извлеку данные.\n"
         "• Ответь «несогласен» на сообщение бота — запишешь замечание.\n"
-        "• /clear — очистить историю.\n"
+        "• /clear — визуально очистить чат (логи НЕ удаляются).\n"
         "• /help — эта справка."
     )
 
 @dp.message(Command("clear"))
 async def cmd_clear(message: Message):
-    clear_history(message.from_user.id)
-    await message.answer("🗑 История очищена.")
+    """Визуально очищает чат — разделитель, НЕ удаляет логи из БД."""
+    await message.answer(
+        "\n".join([
+            " ",
+            "═══════════ 🧹 ИСТОРИЯ ЧАТА ОЧИЩЕНА 🧹 ═══════════",
+            " ",
+        ])
+    )
 
 @dp.message(Command("brief"))
 async def cmd_brief(message: Message):
@@ -383,6 +389,43 @@ async def handle_text(message: Message):
             message, f"❌ Код не найден: <code>{', '.join(missing)}</code>"
         )
         return
+
+    # === ПОИСК ПО ОПИСАНИЮ (если нет явных кодов в запросе) ===
+    if not found_codes and not codes:
+        # Извлекаем потенциальные ключевые слова (существительные, 4+ букв)
+        keywords = re.findall(r'[а-яё]{4,}', text_lower)
+        keywords = [w for w in keywords if w not in (
+            "подбери", "какой", "код", "товар", "груз", "штука", "кг", "вес",
+            "цена", "стоимость", "сумма", "рубль", "доллар", "евро", "юань",
+            "нужен", "расчёт", "помоги", "пожалуйста", "привет", "скажи",
+            "будь", "добрый", "можно", "сколько", "стоить", "будет",
+        )]
+        if keywords:
+            # Ищем в кэше по первому ключевому слову
+            search_results = search_tnved_in_db(keywords[0])
+            if search_results:
+                # Показываем до 3 результатов
+                lines = [f"📋 Найдено по слову \"<b>{keywords[0]}</b>\":"]
+                for r in search_results[:3]:
+                    code = r["code"]
+                    name = r["name"].replace("🠺", "→").strip() if r["name"] else "—"
+                    tariff = r.get("tariff", "—")
+                    lines.append(f"\n🔹 <code>{code}</code>")
+                    lines.append(f"   {name}")
+                    lines.append(f"   💰 {tariff}")
+                lines.append("\n📌 Для расчёта отправь: <code>КОД СУММА_ИНВОЙСА</code>")
+                await safe_send(message, "\n".join(lines))
+                return
+            else:
+                # Ничего не найдено — честно говорим
+                if any(w in text_lower for w in ("подбери", "какой код", "найди код")):
+                    await safe_send(
+                        message,
+                        f"❌ По слову \"<b>{keywords[0]}</b>\" ничего не найдено в справочнике tws.by.\n\n"
+                        f"📌 Загрузите актуальный справочник через /updatecodes\n"
+                        f"📌 Или уточните описание товара"
+                    )
+                    return
 
     base_cur = detect_base_currency(user_text)
     has_ins = any(w in text_lower for w in ("страховка", "страхование"))
