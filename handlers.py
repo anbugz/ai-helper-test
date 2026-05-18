@@ -359,8 +359,12 @@ async def handle_text(message: Message):
         "узнать плат",
         "сколько плат",
     )
-    text_no_codes = re.sub(r"\d{8,10}", "", user_text)
-    has_amount = bool(re.search(r"\d{3,}", text_no_codes))
+    # Удаляем коды ТН ВЭД из текста (нормализуем пробелы), потом ищем суммы
+    # "5208 43 000 0" → нормализуем → "5208430000" → удаляем → остаётся ""
+    text_normalized = re.sub(r"(\d)\s+(?=\d)", r"\1", user_text)
+    text_no_codes = re.sub(r"\d{8,10}", "", text_normalized)
+    # Проверяем наличие числа ≥ 1000 (инвойс/фрахт/страховка)
+    has_amount = bool(re.search(r"(?<!\d)\d{4,}(?!\d)", text_no_codes))
     is_calc = any(w in text_lower for w in calc_words) or (
         bool(found_codes) and has_amount
     )
@@ -482,7 +486,15 @@ async def handle_text(message: Message):
             extra += "Страховка — в ТС. "
         extra += "НЕ придумывай ставки и курсы."
 
-        comps = extract_ts_components_with_currency(user_text)
+        # Удаляем коды ТН ВЭД перед парсингом сумм, чтобы код не стал инвойсом
+        text_clean_for_ts = user_text
+        for c in codes:
+            text_clean_for_ts = text_clean_for_ts.replace(c, "")
+            # Удаляем и раздельный вариант (5208 43 000 0)
+            spaced = " ".join(c[i:i+2] for i in range(0, len(c), 2))
+            text_clean_for_ts = text_clean_for_ts.replace(spaced, "")
+        
+        comps = extract_ts_components_with_currency(text_clean_for_ts)
         # Базовая валюта = валюта инвойса, если определена
         if "invoice" in comps and comps["invoice"]["currency"] != "RUB":
             base_cur = comps["invoice"]["currency"]
