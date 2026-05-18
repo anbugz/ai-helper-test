@@ -2,6 +2,7 @@
 handlers.py — все хэндлеры aiogram.
 """
 import asyncio
+from collections import Counter
 from typing import Dict
 import re
 from datetime import timedelta
@@ -406,38 +407,143 @@ async def handle_text(message: Message):
 
     # === ПОИСК ПО ОПИСАНИЮ (если нет явных кодов в запросе) ===
     if not found_codes and not codes:
-        # Извлекаем потенциальные ключевые слова (существительные, 4+ букв)
-        keywords = re.findall(r'[а-яё]{4,}', text_lower)
+        # --- МАППИНГ ключевых слов → коды разделов ТН ВЭД ---
+        # Позволяет найти товар по названию материала
+        MATERIAL_MAP = {
+            # Хлопок
+            "хлопок": "5208", "хлопковый": "5208", "хлопчатобумажный": "5208",
+            "cotton": "5208", "хлопчатка": "5208",
+            # Шерсть
+            "шерсть": "5105", "шерстяной": "5105", "шерстяные": "5105",
+            "wool": "5105", "шерстяная": "5105",
+            # Шёлк
+            "шёлк": "5007", "шелковый": "5007", "шелк": "5007", "silk": "5007",
+            # Лён
+            "лён": "5309", "льняной": "5309", "лен": "5309", "flax": "5309",
+            # Синтетика
+            "синтетика": "5407", "полиэстер": "5407", "полиэфир": "5407",
+            "polyester": "5407", "синтетический": "5407", "акрил": "5501",
+            # Кожа
+            "кожа": "4202", "кожаный": "4202", "кожаные": "4202", "leather": "4202",
+            # Металлы
+            "сталь": "7326", "нержавейка": "7326", "алюминий": "7602",
+            "медь": "7409", "латунь": "7409", "цинк": "7901",
+            # Электроника
+            "телефон": "8517", "смартфон": "8517", "iphone": "8517",
+            "ноутбук": "8471", "компьютер": "8471", "планшет": "8471",
+            "монитор": "8528", "телевизор": "8528",
+            # Одежда
+            "куртка": "6201", "пальто": "6201", "пуховик": "6201",
+            "рубашка": "6205", "блузка": "6206", "футболка": "6109",
+            "брюки": "6203", "джинсы": "6204", "юбка": "6204",
+            # Обувь
+            "обувь": "6403", "кроссовки": "6404", "ботинки": "6403",
+            "туфли": "6403", "сапоги": "6403",
+            # Продукты
+            "кофе": "0901", "чай": "0902", "шоколад": "1806",
+            "конфеты": "1704", "сок": "2009", "вино": "2204",
+            # Мебель
+            "стул": "9403", "стол": "9403", "диван": "9401",
+            "кровать": "9403", "шкаф": "9403",
+            # Прочее
+            "игрушка": "9503", "велосипед": "8712", "самокат": "8712",
+            "косметика": "3304", "парфюм": "3303", "зубная": "3306",
+            "лампа": "8539", "светодиод": "8539", "led": "8539",
+        }
+        
+        # Извлекаем ключевые слова (4+ букв)
+        keywords = re.findall(r'[а-яёa-z]{4,}', text_lower)
         keywords = [w for w in keywords if w not in (
             "подбери", "какой", "код", "товар", "груз", "штука", "кг", "вес",
             "цена", "стоимость", "сумма", "рубль", "доллар", "евро", "юань",
             "нужен", "расчёт", "помоги", "пожалуйста", "привет", "скажи",
             "будь", "добрый", "можно", "сколько", "стоить", "будет",
+            "прошу", "дай", "выдай", "покажи", "нужно", "надо",
+            "из", "для", "под", "при", "про", "без", "над", "через",
+            "такой", "этот", "также", "очень", "только", "чтобы",
+            "штук", "палет", "короб", "мест", "сантиметр", "сантиметров",
+            "плотност", "ширина", "длина", "высота", "размер",
+            "процент", "масса", "грамм", "метр", "сантиметр",
         )]
+        seen = set()
+        keywords = [w for w in keywords if not (w in seen or seen.add(w))]
+        
+        # --- Шаг 1: Поиск по маппингу материалов ---
+        matched_sections = set()
+        for kw in keywords:
+            if kw in MATERIAL_MAP:
+                matched_sections.add(MATERIAL_MAP[kw])
+        
+        if matched_sections:
+            # Ищем коды в matched разделах
+            import sqlite3
+            from config import DB_PATH
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            all_results = []
+            for section in matched_sections:
+                c.execute(
+                    "SELECT code, name, tariff FROM tnved_cache WHERE code LIKE ? LIMIT 20",
+                    (f"{section}%",)
+                )
+                for row in c.fetchall():
+                    all_results.append({
+                        "code": row[0], "name": row[1], "tariff": row[2],
+                        "section": section,
+                    })
+            conn.close()
+            
+            if all_results:
+                lines = [f"📋 Найдено по материалу \"<b>{', '.join(k for k in keywords if k in MATERIAL_MAP)}</b>\":"]
+                for r in all_results[:5]:
+                    name = (r["name"] or "—").replace("🠺", "→").strip()
+                    lines.append(f"\n🔹 <code>{r['code']}</code>")
+                    lines.append(f"   {name[:100]}{'...' if len(name) > 100 else ''}")
+                    lines.append(f"   💰 {r.get('tariff', '—')}")
+                lines.append("\n📌 Для расчёта отправь: <code>КОД СУММА_ИНВОЙСА</code>")
+                await safe_send(message, "\n".join(lines))
+                return
+        
+        # --- Шаг 2: Поиск по текстовым совпадениям (fallback) ---
         if keywords:
-            # Ищем в кэше по первому ключевому слову
-            search_results = search_tnved_in_db(keywords[0])
-            if search_results:
-                # Показываем до 3 результатов
-                lines = [f"📋 Найдено по слову \"<b>{keywords[0]}</b>\":"]
-                for r in search_results[:3]:
+            all_results = []
+            for kw in keywords[:3]:
+                results = search_tnved_in_db(kw)
+                for r in results:
+                    all_results.append((r, kw))
+            
+            if all_results:
+                code_hits = Counter()
+                code_data = {}
+                for r, kw in all_results:
                     code = r["code"]
-                    name = r["name"].replace("🠺", "→").strip() if r["name"] else "—"
-                    tariff = r.get("tariff", "—")
-                    lines.append(f"\n🔹 <code>{code}</code>")
-                    lines.append(f"   {name}")
-                    lines.append(f"   💰 {tariff}")
+                    code_hits[code] += 1
+                    if code not in code_data:
+                        code_data[code] = r
+                
+                sorted_codes = sorted(code_hits.keys(), key=lambda c: -code_hits[c])
+                
+                lines = [f"📋 Найдено по запросу \"<b>{', '.join(keywords[:3])}</b>\":"]
+                for code in sorted_codes[:3]:
+                    r = code_data[code]
+                    name = (r["name"] or "—").replace("🠺", "→").strip()
+                    hits = code_hits[code]
+                    match = "⭐" if hits >= 2 else "🔹"
+                    lines.append(f"\n{match} <code>{code}</code>")
+                    lines.append(f"   {name[:100]}{'...' if len(name) > 100 else ''}")
+                    lines.append(f"   💰 {r.get('tariff', '—')}")
+                
                 lines.append("\n📌 Для расчёта отправь: <code>КОД СУММА_ИНВОЙСА</code>")
                 await safe_send(message, "\n".join(lines))
                 return
             else:
-                # Ничего не найдено — честно говорим
-                if any(w in text_lower for w in ("подбери", "какой код", "найди код")):
+                if any(w in text_lower for w in ("подбери", "какой код", "найди код", "подбир")):
                     await safe_send(
                         message,
-                        f"❌ По слову \"<b>{keywords[0]}</b>\" ничего не найдено в справочнике tws.by.\n\n"
-                        f"📌 Загрузите актуальный справочник через /updatecodes\n"
-                        f"📌 Или уточните описание товара"
+                        f"❌ По запросу \"<b>{', '.join(keywords[:3])}</b>\" ничего не найдено.\n\n"
+                        f"📌 Попробуйте указать материал: хлопок, шерсть, шёлк, синтетика\n"
+                        f"📌 Или загрузите актуальный справочник через /updatecodes"
                     )
                     return
 
