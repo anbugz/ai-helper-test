@@ -423,10 +423,11 @@ async def handle_text(message: Message):
             "Не указано → 0. Всё в валюте инвойса. "
             "Конвертация: чужая валюта → ₽ ЦБ → валюта инвойса. "
             "СБОР (таможенный и радио): считай в ₽, затем конвертируй в валюту инвойса (CNY/USD/EUR). "
+            "НЕ пиши курс ЦБ РФ в ответе — он будет добавлен автоматически. "
         )
         if has_ins:
             extra += "Страховка — в ТС. "
-        extra += "НЕ придумывай ставки."
+        extra += "НЕ придумывай ставки и курсы."
 
         comps = extract_ts_components_with_currency(user_text)
         # Базовая валюта = валюта инвойса, если определена
@@ -493,16 +494,10 @@ async def handle_text(message: Message):
 
     else:
         # === СЦЕНАРИЙ 3: AI-АССИСТЕНТ (общий вопрос) ===
-        # Контекст без ВЭД-специфики
-        extra = ""
-        if rates:
-            extra = (
-                f"[СПРАВОЧНО: курс ЦБ РФ {rates.get('DATE','')}] "
-                f"1 USD = {rates.get('USD','')} ₽, "
-                f"1 CNY = {rates.get('CNY','')} ₽, "
-                f"1 EUR = {rates.get('EUR','')} ₽"
-            )
-        msgs = build_messages(user_id, user_text, extra_context=extra or None)
+        # Контекст без ВЭД-специфики и без курса
+        extra = "Отвечай как эксперт West Asia по ВЭД и логистике. "
+        extra += "НЕ пиши курс ЦБ РФ в ответе — он будет добавлен автоматически."
+        msgs = build_messages(user_id, user_text, extra_context=extra)
         answer = await ask_deepseek(msgs)
 
     # После этого блок идёт обработка ответа DeepSeek...
@@ -590,18 +585,20 @@ async def handle_text(message: Message):
         answer += "\n\n📌 <i>Точную информацию уточняйте у декларанта.</i>"
 
     # --- Курс ЦБ РФ ----------------------------------------------
-    try:
-        rates = await get_cbr_rates()
-        cny = rates.get("CNY", "н/д")
-        usd = rates.get("USD", "н/д")
-        eur = rates.get("EUR", "н/д")
-        date = rates.get("DATE", "сегодня")
-        answer += (
-            f"\n\n💱 <i>Курс ЦБ РФ на {date}: "
-            f"1 USD = {usd} ₽, 1 CNY = {cny} ₽, 1 EUR = {eur} ₽</i>"
-        )
-    except Exception:
-        pass
+    # Добавляем курс ТОЛЬКО если его ещё нет в ответе
+    if "💱" not in answer and "курс цб" not in answer.lower():
+        try:
+            rates = await get_cbr_rates()
+            cny = rates.get("CNY", "н/д")
+            usd = rates.get("USD", "н/д")
+            eur = rates.get("EUR", "н/д")
+            date = rates.get("DATE", "сегодня")
+            answer += (
+                f"\n\n💱 <i>Курс ЦБ РФ на {date}: "
+                f"1 USD = {usd} ₽, 1 CNY = {cny} ₽, 1 EUR = {eur} ₽</i>"
+            )
+        except Exception:
+            pass
 
     save_message(user_id, message.from_user.username or "", "assistant", answer)
     await safe_send(message, answer)
