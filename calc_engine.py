@@ -7,6 +7,62 @@ from typing import Dict, Optional
 from utils import convert_fee_to_currency
 
 
+def _strip_ai_assistant_junk(answer: str) -> str:
+    """Вырезает лишнее из ответов AI-ассистента:
+    - markdown заголовки (###)
+    - примеры расчётов с придуманными цифрами
+    - блоки 'Допустим:', '**Допустим:**'
+    - курс ЦБ (если придуман DeepSeek)
+    - markdown жирный текст (**текст**)
+    """
+    lines = answer.split("\n")
+    cleaned = []
+    skip_section = False
+    
+    for line in lines:
+        ls = line.strip()
+        
+        # Начало блока "Пример" или "Допустим" — начинаем пропускать
+        if any(kw in ls.lower() for kw in (
+            "**допустим:**", "допустим:", "**пример", "пример расчёта",
+            "**расчёт:**", "### 💰 предварительный",
+            "**предварительный расчёт**", "предварительный расчёт",
+            "📊 **таможенная стоимость:**", "📊 таможенная стоимость:",
+            "**ставки (ориентировочно):**", "для расчёта мне нужны",
+            "инвойс: **", "фрахт: **", "tc:", "тс: **",
+        )):
+            skip_section = True
+            continue
+        
+        # Конец блока (пустая строка после секции для пропуска)
+        if skip_section and ls == "":
+            skip_section = False
+            continue
+            
+        if skip_section:
+            continue
+        
+        # Убираем markdown заголовки ### 
+        if ls.startswith("### "):
+            line = line.replace("### ", "📋 ", 1)
+        
+        # Убираем markdown жирный текст **текст** → текст
+        import re
+        line = re.sub(r'\*\*(.*?)\*\*', r'\1', line)
+        
+        # Убираем markdown разделители ---
+        if ls == "---":
+            continue
+        
+        # Убираем придуманный курс ЦБ
+        if "💱" in line and any(x in line.lower() for x in ("usd = ", "cny = ", "eur = ")):
+            continue
+        
+        cleaned.append(line)
+    
+    return "\n".join(cleaned).strip()
+
+
 def _strip_deepseek_dup(answer: str) -> str:
     """Вырезает дубли от DeepSeek: шапку с кодом и блок Платежи.
     Осторожно: не трогаем хороший развёрнутый расчёт с "Итоговый расчёт" или "ИТОГО платежей".

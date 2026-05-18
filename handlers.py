@@ -40,7 +40,7 @@ from tnved_engine import (
     get_tnved_from_cache,
     calculate_customs_fee,
 )
-from calc_engine import _format_calculation_fallback, _strip_deepseek_dup
+from calc_engine import _format_calculation_fallback, _strip_deepseek_dup, _strip_ai_assistant_junk
 from utils import (
     check_rate_limit,
     now_msk,
@@ -502,6 +502,10 @@ async def handle_text(message: Message):
 
     # После этого блок идёт обработка ответа DeepSeek...
     answer = _strip_deepseek_dup(answer)
+    
+    # Для AI-ассистента — убираем лишнее (markdown, примеры, придуманные курсы)
+    if not is_calc:
+        answer = _strip_ai_assistant_junk(answer)
 
     # --- РАСЧЁТНЫЙ ЗАПРОС: чистый fallback, без дублей ------------
     if is_calc and found_codes and ts_fallback and base_cur:
