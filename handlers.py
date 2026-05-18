@@ -495,14 +495,29 @@ async def handle_text(message: Message):
             conn.close()
             
             if all_results:
-                lines = [f"📋 Найдено по материалу \"<b>{', '.join(k for k in keywords if k in MATERIAL_MAP)}</b>\":"]
+                # Формируем контекст для DeepSeek — найденные коды + описание товара
+                context_parts = [
+                    f"[КОНТЕКСТ: найдены коды ТН ВЭД по запросу пользователя]",
+                    f"Запрос: {user_text}",
+                    f"Найдено по материалу: {', '.join(k for k in keywords if k in MATERIAL_MAP)}",
+                    f"\nВарианты кодов:",
+                ]
                 for r in all_results[:5]:
                     name = (r["name"] or "—").replace("🠺", "→").strip()
-                    lines.append(f"\n🔹 <code>{r['code']}</code>")
-                    lines.append(f"   {name[:100]}{'...' if len(name) > 100 else ''}")
-                    lines.append(f"   💰 {r.get('tariff', '—')}")
-                lines.append("\n📌 Для расчёта отправь: <code>КОД СУММА_ИНВОЙСА</code>")
-                await safe_send(message, "\n".join(lines))
+                    context_parts.append(f"  {r['code']} | {name[:100]} | {r['tariff']}")
+                context_parts.append(
+                    "\nПомоги пользователю выбрать ПРАВИЛЬНЫЙ код. "
+                    "Укажи какой код наиболее вероятный и что уточнить для точного выбора "
+                    "(переплетение, отделка, плотность). "
+                    "НЕ пиши курс ЦБ."
+                )
+                
+                extra = "\n".join(context_parts)
+                msgs = build_messages(user_id, user_text, extra_context=extra)
+                answer = await ask_deepseek(msgs)
+                answer = _strip_ai_assistant_junk(answer)
+                
+                await safe_send(message, answer)
                 return
         
         # --- Шаг 2: Поиск по текстовым совпадениям (fallback) ---
